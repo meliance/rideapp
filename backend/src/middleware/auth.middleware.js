@@ -9,29 +9,78 @@ export const protectRoute = async (req, res, next) => {
       return res.status(401).json({ message: "Unauthorized - No Token Provided" });
     }
 
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-
-    if (!decoded) {
-      return res.status(401).json({ message: "Unauthorized - Invalid Token" });
+    let decoded;
+    try {
+      // Catch token specific validation failures explicitly
+      decoded = jwt.verify(token, process.env.JWT_SECRET);
+    } catch (jwtError) {
+      if (jwtError.name === "TokenExpiredError") {
+        return res.status(401).json({ message: "Unauthorized - Token Has Expired" });
+      }
+      return res.status(401).json({ message: "Unauthorized - Invalid Token Structure" });
     }
 
-    const result = await pool.query(
-      'SELECT id, name, phone_number, profile_pic, created_at FROM users WHERE id = $1',
-      [decoded.userId]
-    );
+    // Safety Fix: Make sure decoded.id matches whatever key you used in generateToken()
+    const targetUserId = decoded.id || decoded.userId; 
+
+    // Fetch user details AND driver status without exposing the password hash
+    const query = `
+      SELECT u.id, u.name, u.phone_number, u.profile_pic,
+             dp.approval_status, dp.is_available
+      FROM users u
+      LEFT JOIN driver_profiles dp ON u.id = dp.user_id
+      WHERE u.id = $1
+    `;
     
+    const result = await pool.query(query, [targetUserId]);
     const user = result.rows[0];
 
     if (!user) {
-      return res.status(404).json({ message: "User not found" });
+      return res.status(404).json({ message: "User account no longer exists" });
     }
 
-    req.user = user;
+    const roles = ["rider"];
+    if (user.approval_status !== null) {
+        roles.push("driver");
+    }
+
+    // Build the request object for down-stream controller use
+    req.user = {
+        id: user.id,
+        name: user.name,
+        phoneNumber: user.phone_number,
+        profilePic: user.profile_pic,
+        roles: roles,
+        driverStatus: user.approval_status,
+        isDriverAvailable: user.is_available,
+        activeSessionRole: decoded.role // Maps out what role they signed in with
+    };
     
     next();
 
   } catch (error) {
-    console.log("Error in protectRoute middleware:", error.message);
+    console.error("Error in protectRoute middleware system:", error);
     res.status(500).json({ message: "Internal Server Error" });
   }
+};
+
+// Restricts endpoints strictly to users operating in Driver Mode
+export const requireDriverMode = (req, res, next) => {
+  if (req.user.activeSessionRole !== "driver") {
+    return res.status(403).json({ message: "Forbidden - You must switch to driver mode to do this" });
+  }
+  
+  if (req.user.driverStatus !== "APPROVED") {
+    return res.status(403).json({ message: "Forbidden - Your driver profile is not approved yet" });
+  }
+  
+  next();
+};
+
+// Restricts endpoints strictly to users operating in Rider Mode
+export const requireRiderMode = (req, res, next) => {
+  if (req.user.activeSessionRole !== "rider") {
+    return res.status(403).json({ message: "Forbidden - Switch back to passenger mode to request a ride" });
+  }
+  next();
 };
