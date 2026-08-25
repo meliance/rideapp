@@ -2,6 +2,7 @@ import bcrypt from "bcryptjs";
 import { pool } from "../lib/db.js";
 import { generateToken } from "../lib/utils.js";
 
+// 1. STANDARD PASSENGER SIGNUP
 export const signup = async (req, res) => {
   const { name, phoneNumber, password } = req.body;
   
@@ -10,74 +11,173 @@ export const signup = async (req, res) => {
       return res.status(400).json({ message: "All fields are required" });
     }
 
-    if (password.length < 4) {
-      return res.status(400).json({ message: "Password must be at least 4 characters" });
-    }
-
-    // Check if user exists
-    const userExists = await pool.query('SELECT * FROM users WHERE phone_number = $1', [phoneNumber]);
+    const userExists = await pool.query('SELECT id FROM users WHERE phone_number = $1', [phoneNumber]);
     if (userExists.rows.length > 0) {
       return res.status(400).json({ message: "Phone number already exists" });
     }
 
-    // Hash password
     const salt = await bcrypt.genSalt(10);
     const hashedPassword = await bcrypt.hash(password, salt);
 
-    // Insert user and return specific fields
     const newUserQuery = `
-      INSERT INTO users (name, phone_number, password) 
+      INSERT INTO users (name, phone_number, password_hash) 
       VALUES ($1, $2, $3) 
-      RETURNING id, name, phone_number, profile_pic, created_at
+      RETURNING id, name, phone_number, profile_pic
     `;
     const newUserResult = await pool.query(newUserQuery, [name, phoneNumber, hashedPassword]);
     const newUser = newUserResult.rows[0];
 
-    if (newUser) {
-      // Generate jwt token here
-      generateToken(newUser.id, res);
+    generateToken(newUser.id, "rider", res);
 
-      res.status(201).json({
-        id: newUser.id,
-        name: newUser.name,
-        phoneNumber: newUser.phone_number,
-        profilePic: newUser.profile_pic,
-      });
-    } else {
-      res.status(400).json({ message: "Invalid user data" });
-    }
+    res.status(201).json({
+      id: newUser.id,
+      name: newUser.name,
+      phoneNumber: newUser.phone_number,
+      profilePic: newUser.profile_pic,
+      roles: ["rider"]
+    });
   } catch (error) {
-    console.log("Error in signup controller", error.message);
+    console.error("Error in signup:", error);
     res.status(500).json({ message: "Internal Server Error" });
   }
 };
 
+// 2. FIRST-TIME DRIVER SIGNUP (Fixed Database Client Placement)
+export const driverSignup = async (req, res) => {
+  const { name, phoneNumber, password, vehicleMake, vehicleModel, licensePlate } = req.body;
+  
+  // FIX: Declare client variable outside so 'finally' block can access it safely
+  let client;
+  
+  try {
+    if (!name || !phoneNumber || !password || !vehicleMake || !vehicleModel || !licensePlate) {
+      return res.status(400).json({ message: "All fields are required" });
+    }
+
+    // FIX: Safely retrieve client inside try block to capture connection failures gracefully
+    client = await pool.connect();
+
+    const userExists = await client.query('SELECT id FROM users WHERE phone_number = $1', [phoneNumber]);
+    if (userExists.rows.length > 0) {
+      return res.status(400).json({ message: "Phone number already exists. Please log in to upgrade to a driver account." });
+    }
+
+    const salt = await bcrypt.genSalt(10);
+    const hashedPassword = await bcrypt.hash(password, salt);
+
+    // BEGIN TRANSACTION
+    await client.query('BEGIN');
+
+    // Step A: Create the core identity
+    const userResult = await client.query(
+      `INSERT INTO users (name, phone_number, password_hash) VALUES ($1, $2, $3) RETURNING id, name, phone_number`,
+      [name, phoneNumber, hashedPassword]
+    );
+    const newUserId = userResult.rows[0].id;
+
+    // Step B: Create the driver profile linked to the new user ID
+    const driverResult = await client.query(
+      `INSERT INTO driver_profiles (user_id, vehicle_make, vehicle_model, license_plate) 
+       VALUES ($1, $2, $3, $4) 
+       RETURNING vehicle_make, license_plate, approval_status`,
+      [newUserId, vehicleMake, vehicleModel, licensePlate]
+    );
+
+    // COMMIT TRANSACTION (Saves both tables permanently)
+    await client.query('COMMIT');
+
+    const newDriver = driverResult.rows[0];
+
+    // Default to logging them in as a driver
+    generateToken(newUserId, "driver", res);
+
+    res.status(201).json({
+      id: newUserId,
+      name: userResult.rows[0].name,
+      phoneNumber: userResult.rows[0].phone_number,
+      vehicle: {
+        make: newDriver.vehicle_make,
+        plate: newDriver.license_plate
+      },
+      status: newDriver.approval_status,
+      roles: ["rider", "driver"],
+      activeRole: "driver"
+    });
+
+  } catch (error) {
+    // FIX: Only rollback if the connection was successfully established and a transaction started
+    if (client) {
+      await client.query('ROLLBACK');
+    }
+    
+    console.error("Error in driver signup:", error);
+    
+    if (error.code === '23505') { // Postgres unique violation error code
+      return res.status(400).json({ message: "License plate or phone number already in use" });
+    }
+    res.status(500).json({ message: "Internal Server Error" });
+  } finally {
+    // FIX: Safe check to ensure we only release client if it was instantiated
+    if (client) {
+      client.release();
+    }
+  }
+};
+
+// 3. Login Route (Handles both Riders and Drivers)
 export const login = async (req, res) => {
   const { phoneNumber, password } = req.body;
   
   try {
-    const result = await pool.query('SELECT * FROM users WHERE phone_number = $1', [phoneNumber]);
-    const user = result.rows[0];
+    if (!phoneNumber || !password) {
+      return res.status(400).json({ message: "Phone number and password are required" });
+    }
 
-    if (!user) {
+    const query = `
+      SELECT u.id, u.name, u.phone_number, u.password_hash, u.profile_pic,
+             dp.approval_status, dp.license_plate
+      FROM users u
+      LEFT JOIN driver_profiles dp ON u.id = dp.user_id
+      WHERE u.phone_number = $1
+    `;
+    
+    const result = await pool.query(query, [phoneNumber]);
+    const account = result.rows[0];
+
+    if (!account) {
       return res.status(400).json({ message: "Invalid credentials" });
     }
 
-    const isPasswordCorrect = await bcrypt.compare(password, user.password);
+    const isPasswordCorrect = await bcrypt.compare(password, account.password_hash);
     if (!isPasswordCorrect) {
       return res.status(400).json({ message: "Invalid credentials" });
     }
 
-    generateToken(user.id, res);
+    const roles = ["rider"];
+    const isDriver = account.approval_status !== null;
+    
+    if (isDriver) {
+      roles.push("driver");
+    }
+
+    // Optimization: If their driver account is suspended or rejected, force them into rider mode!
+    const isApprovedDriver = isDriver && account.approval_status === "APPROVED";
+    const activeRole = isApprovedDriver ? "driver" : "rider";
+
+    generateToken(account.id, activeRole, res);
 
     res.status(200).json({
-      id: user.id,
-      name: user.name,
-      phoneNumber: user.phone_number,
-      profilePic: user.profile_pic,
+      id: account.id,
+      name: account.name,
+      phoneNumber: account.phone_number,
+      profilePic: account.profile_pic,
+      roles: roles,
+      activeRole: activeRole,
+      driverStatus: account.approval_status 
     });
+
   } catch (error) {
-    console.log("Error in login controller", error.message);
+    console.error("Error in login:", error);
     res.status(500).json({ message: "Internal Server Error" });
   }
 };
@@ -87,7 +187,64 @@ export const logout = (req, res) => {
     res.cookie("jwt", "", { maxAge: 0 });
     res.status(200).json({ message: "Logged out successfully" });
   } catch (error) {
-    console.log("Error in logout controller", error.message);
+    console.error("Error in logout:", error);
+    res.status(500).json({ message: "Internal Server Error" });
+  }
+};
+
+// 4. UPGRADE EXISTING PASSENGER TO DRIVER
+export const upgradeToDriver = async (req, res) => {
+  const { vehicleMake, vehicleModel, licensePlate } = req.body;
+  const userId = req.user.id; 
+
+  try {
+    if (!vehicleMake || !vehicleModel || !licensePlate) {
+      return res.status(400).json({ message: "All vehicle details are required" });
+    }
+
+    // 1. Verify that they aren't already a driver
+    const driverExists = await pool.query(
+      "SELECT user_id FROM driver_profiles WHERE user_id = $1", 
+      [userId]
+    );
+    
+    if (driverExists.rows.length > 0) {
+      return res.status(400).json({ message: "You already have a driver profile linked to this account" });
+    }
+
+    // 2. Insert the new driver profile linked to their existing user ID
+    const insertQuery = `
+      INSERT INTO driver_profiles (user_id, vehicle_make, vehicle_model, license_plate, approval_status)
+      VALUES ($1, $2, $3, $4, 'PENDING')
+      RETURNING vehicle_make, vehicle_model, license_plate, approval_status
+    `;
+    
+    const result = await pool.query(insertQuery, [userId, vehicleMake, vehicleModel, licensePlate]);
+    const driverProfile = result.rows[0];
+
+    // 3. Update their session token to reflect the role expansion if needed, 
+    // but keep activeRole as "rider" since their driver status is still PENDING.
+    generateToken(userId, "rider", res);
+
+    res.status(200).json({
+      message: "Driver application submitted successfully",
+      vehicle: {
+        make: driverProfile.vehicle_make,
+        model: driverProfile.vehicle_model,
+        plate: driverProfile.license_plate
+      },
+      status: driverProfile.approval_status,
+      roles: ["rider", "driver"],
+      activeRole: "rider" // Must remain rider until admin changes status to APPROVED
+    });
+
+  } catch (error) {
+    console.error("Error in upgradeToDriver:", error);
+    
+    if (error.code === '23505') { // Postgres unique violation for license_plate
+      return res.status(400).json({ message: "This license plate is already registered to another driver" });
+    }
+    
     res.status(500).json({ message: "Internal Server Error" });
   }
 };
@@ -96,7 +253,7 @@ export const checkAuth = (req, res) => {
   try {
     res.status(200).json(req.user);
   } catch (error) {
-    console.log("Error in checkAuth controller", error.message);
+    console.error("Error in checkAuth:", error);
     res.status(500).json({ message: "Internal Server Error" });
   }
 };
