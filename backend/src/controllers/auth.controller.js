@@ -1,5 +1,6 @@
 import bcrypt from "bcryptjs";
 import { pool } from "../lib/db.js";
+import cloudinary from "../lib/cloudinary.js";
 import { generateToken } from "../lib/utils.js";
 
 // 1. STANDARD PASSENGER SIGNUP
@@ -257,3 +258,65 @@ export const checkAuth = (req, res) => {
     res.status(500).json({ message: "Internal Server Error" });
   }
 };
+
+// export const updateProfilePic = async (req, res) => {
+//   try {
+//     const { profilePic } = req.body;
+//     const userId = req.user.id;
+
+//     if (!profilePic) {
+//       return res.status(400).json({ message: "Profile picture is required" });
+//     }
+
+//     // 1. Fetch the user's current profile picture URL from PostgreSQL
+//     const selectQuery = "SELECT profile_pic FROM users WHERE id = $1";
+//     const userCheck = await pool.query(selectQuery, [userId]);
+//     const currentPicUrl = userCheck.rows[0]?.profile_pic;
+
+//     // 2. Clear old assets out of Cloudinary to avoid massive billing leaks
+//     if (currentPicUrl && currentPicUrl.includes("cloudinary.com")) {
+//       try {
+//         const urlParts = currentPicUrl.split("/");
+//         const folderAndFile = urlParts.slice(-2).join("/");
+//         const publicId = folderAndFile.split(".")[0];
+        
+//         await cloudinary.uploader.destroy(publicId);
+//       } catch (deletionError) {
+//         console.error("Cloudinary asset deletion failed:", deletionError);
+//       }
+//     }
+
+//     // 3. Upload new base64 string to Cloudinary with explicit filters & transforms
+//     const uploadResponse = await cloudinary.uploader.upload(profilePic, {
+//       folder: "ride_app_profiles",
+//       allowed_formats: ["jpg", "jpeg", "png", "webp"],
+//       transformation: [{ width: 400, height: 400, crop: "fill", quality: "auto" }]
+//     });
+
+//     // 4. Update the user in PostgreSQL
+//     const updateQuery = `
+//       UPDATE users 
+//       SET profile_pic = $1 
+//       WHERE id = $2 
+//       RETURNING id, name, phone_number, profile_pic
+//     `;
+    
+//     const result = await pool.query(updateQuery, [uploadResponse.secure_url, userId]);
+//     const updatedUser = result.rows[0];
+
+//     res.status(200).json({
+//       message: "Profile picture updated successfully",
+//       user: updatedUser
+//     });
+
+//   } catch (error) {
+//     console.error("Error in updateProfilePic:", error);
+    
+//     // Catch Cloudinary payload too large errors (HTTP 413)
+//     if (error.http_code === 413) {
+//         return res.status(413).json({ message: "Image file size is too large" });
+//     }
+    
+//     res.status(500).json({ message: "Internal Server Error" });
+//   }
+// };
