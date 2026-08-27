@@ -6,6 +6,7 @@ import { connectDB } from './lib/db.js';
 
 import { app, server } from './lib/socket.js'; 
 import authRoutes from './routes/auth.route.js'; 
+import driverRoutes from './routes/driver.route.js';
 
 dotenv.config();
 
@@ -22,7 +23,7 @@ app.use(
 );
 
 app.use("/api/auth", authRoutes);
-
+app.use("/api/drivers", driverRoutes);
 app.get('/api/health', (req, res) => {
   res.status(200).json({ status: 'success', message: 'Ride App API is running smoothly' });
 });
