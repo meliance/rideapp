@@ -4,17 +4,16 @@ import cors from 'cors';
 import cookieParser from 'cookie-parser';
 import { connectDB } from './lib/db.js';
 
-import authRoutes from './routes/auth.route.js';
-
+import { app, server } from './lib/socket.js'; 
+import authRoutes from './routes/auth.route.js'; 
 
 dotenv.config();
 
-const app = express();
 const PORT = process.env.PORT || 5000;
 
-
-app.use(express.json());
-app.use(cookieParser());
+app.use(express.json({ limit: "5mb" })); 
+app.use(express.urlencoded({ limit: "5mb", extended: true }));
+app.use(cookieParser()); 
 app.use(
   cors({
     origin: 'http://localhost:5173', 
@@ -22,19 +21,13 @@ app.use(
   })
 );
 
-app.use(express.json({ limit: "5mb" })); 
-app.use(express.urlencoded({ limit: "5mb", extended: true }));
-
 app.use("/api/auth", authRoutes);
-// 3. Base Health Check Route
+
 app.get('/api/health', (req, res) => {
-  res.status(200).json({
-    status: 'success',
-    message: 'Ride App API is running smoothly',
-  });
+  res.status(200).json({ status: 'success', message: 'Ride App API is running smoothly' });
 });
 
-app.listen(PORT, async () => {
+server.listen(PORT, async () => {
   console.log(`Server listening on http://localhost:${PORT}`);
   await connectDB();
 });
