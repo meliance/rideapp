@@ -1,4 +1,4 @@
-import {poo} from "../lib/db.js";
+import {pool} from "../lib/db.js";
 
 export const getNearbyDrivers = async (req, res) => {
     try {
