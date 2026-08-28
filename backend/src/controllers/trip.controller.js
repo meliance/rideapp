@@ -89,3 +89,83 @@ export const requestTrip = async (req, res) => {
     client.release();
   }
 };
+
+export const respondToTrip = async (req, res) => {
+  const client = await pool.connect();
+  
+  try {
+    const driverId = req.user.id;
+    const { tripId } = req.params;
+    const { status } = req.body; 
+
+    if (!['ACCEPTED', 'CANCELLED'].includes(status)) {
+      return res.status(400).json({ message: "Invalid status. Use ACCEPTED or CANCELLED." });
+    }
+
+    await client.query('BEGIN');
+
+    // 1. Lock the specific trip to prevent passenger-cancellation race conditions
+    const tripQuery = `
+      SELECT id, passenger_id, status 
+      FROM trips 
+      WHERE id = $1 AND driver_id = $2 
+      FOR UPDATE;
+    `;
+    const tripResult = await client.query(tripQuery, [tripId, driverId]);
+    const trip = tripResult.rows[0];
+
+    if (!trip) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ message: "Trip not found or not assigned to you." });
+    }
+
+    if (trip.status !== 'REQUESTED') {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ message: `Too late. Trip is already ${trip.status}.` });
+    }
+
+    // 2. Update the trip status
+    const updateTripQuery = `
+      UPDATE trips 
+      SET status = $1 
+      WHERE id = $2 
+      RETURNING id, passenger_id, driver_id, status;
+    `;
+    const updatedTripResult = await client.query(updateTripQuery, [status, tripId]);
+    const updatedTrip = updatedTripResult.rows[0];
+
+    // 3. If accepted, immediately pull the driver off the available market
+    if (status === 'ACCEPTED') {
+      await client.query(
+        `UPDATE driver_profiles SET is_available = false WHERE user_id = $1`,
+        [driverId]
+      );
+    }
+
+    await client.query('COMMIT');
+
+    // 4. Real-Time Broadcast: Ping the passenger's private room with the decision
+    io.to(`user_${trip.passenger_id}`).emit("trip_status_updated", {
+      tripId: updatedTrip.id,
+      status: updatedTrip.status,
+      driver: {
+        id: driverId,
+        name: req.user.name,
+        profilePic: req.user.profilePic
+      }
+    });
+
+    res.status(200).json({
+      success: true,
+      message: `Trip ${status.toLowerCase()} successfully`,
+      trip: updatedTrip
+    });
+
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error("Error in respondToTrip:", error);
+    res.status(500).json({ message: "Internal Server Error" });
+  } finally {
+    client.release();
+  }
+};
