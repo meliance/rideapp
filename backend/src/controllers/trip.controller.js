@@ -169,3 +169,74 @@ export const respondToTrip = async (req, res) => {
     client.release();
   }
 };
+
+export const updateTripLifecycle = async (req, res) => {
+  const client = await pool.connect();
+  
+  try {
+    const driverId = req.user.id;
+    const { tripId } = req.params;
+    const { status } = req.body; 
+
+    const validStatuses = ['ARRIVED', 'IN_PROGRESS', 'COMPLETED'];
+    if (!validStatuses.includes(status)) {
+      return res.status(400).json({ message: "Invalid status. Use ARRIVED, IN_PROGRESS, or COMPLETED." });
+    }
+
+    await client.query('BEGIN');
+
+    // 1. Lock and verify the trip belongs to this driver
+    const tripQuery = `
+      SELECT id, passenger_id, status 
+      FROM trips 
+      WHERE id = $1 AND driver_id = $2 
+      FOR UPDATE;
+    `;
+    const tripResult = await client.query(tripQuery, [tripId, driverId]);
+    const trip = tripResult.rows[0];
+
+    if (!trip) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ message: "Trip not found or not assigned to you." });
+    }
+
+    // 2. Update the status
+    const updateTripQuery = `
+      UPDATE trips 
+      SET status = $1 
+      WHERE id = $2 
+      RETURNING id, passenger_id, status;
+    `;
+    const updatedTripResult = await client.query(updateTripQuery, [status, tripId]);
+    const updatedTrip = updatedTripResult.rows[0];
+
+    // 3. If COMPLETED, free up the driver to take new rides
+    if (status === 'COMPLETED') {
+      await client.query(
+        `UPDATE driver_profiles SET is_available = true WHERE user_id = $1`,
+        [driverId]
+      );
+    }
+
+    await client.query('COMMIT');
+
+    // 4. Real-Time Broadcast: Update the passenger's UI instantly
+    io.to(`user_${trip.passenger_id}`).emit("trip_status_updated", {
+      tripId: updatedTrip.id,
+      status: updatedTrip.status
+    });
+
+    res.status(200).json({
+      success: true,
+      message: `Trip marked as ${status}`,
+      trip: updatedTrip
+    });
+
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error("Error in updateTripLifecycle:", error);
+    res.status(500).json({ message: "Internal Server Error" });
+  } finally {
+    client.release();
+  }
+};
