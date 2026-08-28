@@ -240,3 +240,62 @@ export const updateTripLifecycle = async (req, res) => {
     client.release();
   }
 };
+
+export const getTripHistory = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const role = req.user.activeSessionRole;
+
+    let query = "";
+    
+    if (role === "rider") {
+      query = `
+        SELECT 
+          t.id AS trip_id, t.status, t.fare_estimation, t.created_at,
+          ST_Y(t.pickup_location::geometry) AS pickup_lat, 
+          ST_X(t.pickup_location::geometry) AS pickup_lng,
+          ST_Y(t.dropoff_location::geometry) AS dropoff_lat, 
+          ST_X(t.dropoff_location::geometry) AS dropoff_lng,
+          u.name AS driver_name, u.phone_number AS driver_phone, u.profile_pic AS driver_pic,
+          dp.vehicle_make, dp.vehicle_model, dp.license_plate
+        FROM trips t
+        -- LEFT JOIN ensures we still get the trip even if a driver deleted their account
+        LEFT JOIN users u ON t.driver_id = u.id 
+        LEFT JOIN driver_profiles dp ON t.driver_id = dp.user_id
+        WHERE t.passenger_id = $1
+        ORDER BY t.created_at DESC
+        LIMIT 50; -- Prevent massive payloads
+      `;
+    } else if (role === "driver") {
+      // 2. Driver Query: Get passenger details
+      query = `
+        SELECT 
+          t.id AS trip_id, t.status, t.fare_estimation, t.created_at,
+          ST_Y(t.pickup_location::geometry) AS pickup_lat, 
+          ST_X(t.pickup_location::geometry) AS pickup_lng,
+          ST_Y(t.dropoff_location::geometry) AS dropoff_lat, 
+          ST_X(t.dropoff_location::geometry) AS dropoff_lng,
+          u.name AS passenger_name, u.phone_number AS passenger_phone, u.profile_pic AS passenger_pic
+        FROM trips t
+        JOIN users u ON t.passenger_id = u.id
+        WHERE t.driver_id = $1
+        ORDER BY t.created_at DESC
+        LIMIT 50;
+      `;
+    } else {
+      return res.status(400).json({ message: "Invalid session role" });
+    }
+
+    const result = await pool.query(query, [userId]);
+
+    res.status(200).json({
+      success: true,
+      count: result.rows.length,
+      history: result.rows
+    });
+
+  } catch (error) {
+    console.error("Error fetching trip history:", error);
+    res.status(500).json({ message: "Internal Server Error" });
+  }
+};
