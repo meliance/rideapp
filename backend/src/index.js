@@ -13,9 +13,6 @@ dotenv.config();
 
 const PORT = process.env.PORT || 5000;
 
-app.use(express.json({ limit: "5mb" })); 
-app.use(express.urlencoded({ limit: "5mb", extended: true }));
-app.use(cookieParser()); 
 app.use(
   cors({
     origin: 'http://localhost:5173', 
@@ -23,9 +20,14 @@ app.use(
   })
 );
 
+app.use(express.json({ limit: "5mb" })); 
+app.use(express.urlencoded({ limit: "5mb", extended: true }));
+app.use(cookieParser()); 
+
 app.use("/api/auth", authRoutes);
 app.use("/api/drivers", driverRoutes);
 app.use("/api/trips", tripRoutes);
+
 app.get('/api/health', (req, res) => {
   res.status(200).json({ status: 'success', message: 'Ride App API is running smoothly' });
 });
