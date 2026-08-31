@@ -134,6 +134,13 @@ export default function RideMap() {
     }
   };
 
+  const handleCancel = () => {
+    setDestination(null);
+    setSearchQuery('');
+    setRequestStatus('');
+    setIsRequesting(false);
+  };
+
   return (
     <div style={{ height: "100vh", width: "100vw", position: "relative", zIndex: 0 }}>
       
@@ -189,6 +196,7 @@ export default function RideMap() {
       </MapContainer>
 
       {/* CHECKOUT LAYER (Bottom) */}
+      {/* CHECKOUT LAYER (Bottom) */}
       {destination && (
         <div className="absolute bottom-0 left-0 w-full p-4 z-[1000] pointer-events-none">
           <div className="max-w-md mx-auto bg-white rounded-2xl shadow-2xl overflow-hidden pointer-events-auto border border-gray-100 p-6">
@@ -200,17 +208,31 @@ export default function RideMap() {
             </div>
 
             {requestStatus ? (
-              <div className="text-center p-3 bg-gray-50 text-black rounded-lg font-medium">
-                {requestStatus}
+              <div className="text-center p-4 bg-gray-50 rounded-xl border border-gray-100">
+                <p className="font-medium text-gray-900 mb-3">{requestStatus}</p>
+                <button 
+                  onClick={handleCancel}
+                  className="text-red-500 text-sm font-bold hover:text-red-700 transition-colors"
+                >
+                  Cancel Request
+                </button>
               </div>
             ) : (
-              <button 
-                onClick={handleRequestRide}
-                disabled={isRequesting}
-                className="w-full bg-black text-white py-4 rounded-xl font-bold text-lg shadow-md hover:bg-gray-800 disabled:bg-gray-400 transition-colors"
-              >
-                {isRequesting ? 'Processing...' : 'Confirm Ride'}
-              </button>
+              <div className="flex gap-3">
+                <button 
+                  onClick={handleCancel}
+                  className="w-1/3 bg-gray-100 text-gray-700 py-4 rounded-xl font-bold text-lg hover:bg-gray-200 transition-colors"
+                >
+                  Cancel
+                </button>
+                <button 
+                  onClick={handleRequestRide}
+                  disabled={isRequesting}
+                  className="w-2/3 bg-black text-white py-4 rounded-xl font-bold text-lg shadow-md hover:bg-gray-800 disabled:bg-gray-400 transition-colors"
+                >
+                  {isRequesting ? 'Processing...' : 'Confirm'}
+                </button>
+              </div>
             )}
           </div>
         </div>

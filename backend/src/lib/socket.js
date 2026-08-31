@@ -2,7 +2,6 @@ import { Server } from "socket.io";
 import http from "http";
 import express from "express";
 import jwt from "jsonwebtoken";
-import * as cookie from "cookie"; 
 import { pool } from "./db.js";
 
 const app = express();
@@ -23,9 +22,17 @@ io.use(async (socket, next) => {
       return next(new Error("Authentication error - No cookies provided"));
     }
 
-    // Parse the incoming cookie string
-    const parsedCookies = cookie.parse(rawCookies);
-    const token = parsedCookies.jwt;
+    // --- NEW: Bulletproof Vanilla JS Cookie Parser ---
+    const cookies = {};
+    rawCookies.split(";").forEach((cookieString) => {
+      const [key, value] = cookieString.split("=");
+      if (key && value) {
+        cookies[key.trim()] = value.trim();
+      }
+    });
+    
+    const token = cookies.jwt;
+    // ------------------------------------------------
 
     if (!token) {
       return next(new Error("Authentication error - No token found"));
