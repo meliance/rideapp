@@ -1,20 +1,19 @@
 import { useEffect } from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
 import { useAuthStore } from './store/useAuthStore';
-import { useSocketStore } from './store/useSocketStore'; // <-- Import the new store
+import { useSocketStore } from './store/useSocketStore';
 import RideMap from './components/RideMap';
+import DriverDashboard from './components/DriverDashboard';
 import Login from './components/Login';
 
 function App() {
   const { authUser, isCheckingAuth, checkAuth } = useAuthStore();
-  const { connectSocket, disconnectSocket } = useSocketStore(); // <-- Extract the functions
+  const { connectSocket, disconnectSocket } = useSocketStore();
 
-  // Check for the HTTP-only cookie on first load
   useEffect(() => {
     checkAuth();
   }, [checkAuth]);
 
-  // NEW: Listen to auth state changes to manage the socket
   useEffect(() => {
     if (authUser) {
       connectSocket();
@@ -31,9 +30,21 @@ function App() {
     );
   }
 
+  // Check which role the user holds (adjust this property name if your DB uses `role` instead of `activeRole`)
+  const isDriver = authUser?.activeRole === 'driver' || authUser?.role === 'driver';
+
   return (
     <Routes>
-      <Route path="/" element={authUser ? <RideMap /> : <Navigate to="/login" />} />
+      <Route 
+        path="/" 
+        element={
+          authUser ? (
+            isDriver ? <DriverDashboard /> : <RideMap />
+          ) : (
+            <Navigate to="/login" />
+          )
+        } 
+      />
       <Route path="/login" element={!authUser ? <Login /> : <Navigate to="/" />} />
     </Routes>
   );
