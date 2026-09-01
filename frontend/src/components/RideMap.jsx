@@ -3,6 +3,7 @@ import { MapContainer, TileLayer, Marker, Popup } from 'react-leaflet';
 import 'leaflet/dist/leaflet.css';
 import L from 'leaflet';
 import { axiosInstance } from '../lib/axios';
+import { useSocketStore } from '../store/useSocketStore';
 
 // --- VITE DEFAULT ICON FIX ---
 import icon from 'leaflet/dist/images/marker-icon.png';
@@ -10,7 +11,6 @@ import iconShadow from 'leaflet/dist/images/marker-shadow.png';
 
 let DefaultIcon = L.icon({ iconUrl: icon, shadowUrl: iconShadow });
 L.Marker.prototype.options.icon = DefaultIcon;
-// -----------------------------
 
 const carIcon = new L.Icon({
   iconUrl: 'https://cdn-icons-png.flaticon.com/512/3204/3204121.png', 
@@ -18,7 +18,6 @@ const carIcon = new L.Icon({
   iconAnchor: [16, 16]
 });
 
-// A red icon for the destination
 const destinationIcon = new L.Icon({
   iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-red.png',
   iconSize: [25, 41],
@@ -26,19 +25,28 @@ const destinationIcon = new L.Icon({
 });
 
 export default function RideMap() {
+  const { socket } = useSocketStore(); // Extract socket
+
   const [drivers, setDrivers] = useState([]);
   const [isRequesting, setIsRequesting] = useState(false);
   const [requestStatus, setRequestStatus] = useState('');
   
-  // NEW: Search and Destination states
+  // Search and Destination states
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState([]);
   const [destination, setDestination] = useState(null);
   const [estimatedFee, setEstimatedFee] = useState(0);
   
+  // State for the moving driver
+  const [liveDriverLocation, setLiveDriverLocation] = useState(null);
+
   const position = [9.0300, 38.7400]; // Passenger Pickup Location
 
+  // Poll for nearby drivers
   const fetchNearbyDrivers = async () => {
+    // Only poll if we aren't already tracking a live driver
+    if (liveDriverLocation) return; 
+
     try {
       const res = await axiosInstance.get(`/drivers/nearby?latitude=${position[0]}&longitude=${position[1]}`);
       setDrivers(res.data.drivers || []);
@@ -51,9 +59,47 @@ export default function RideMap() {
     fetchNearbyDrivers(); 
     const interval = setInterval(fetchNearbyDrivers, 10000); 
     return () => clearInterval(interval); 
-  }, []);
+  }, [liveDriverLocation]); 
 
-  // 1. Search OpenStreetMap for places as the user types
+  // NEW: Listen for live driver movement AND status updates
+  useEffect(() => {
+    if (!socket) return;
+
+    // 1. Movement listener
+    const handleDriverMove = (coords) => {
+      setLiveDriverLocation([coords.latitude, coords.longitude]);
+    };
+
+    // 2. Status update listener
+    const handleStatusUpdate = (data) => {
+      if (data.status === "ACCEPTED") {
+        setRequestStatus("Driver accepted! They are on the way.");
+      } 
+      else if (data.status === "IN_PROGRESS") {
+        setRequestStatus("You are in the car. Enjoy the ride!");
+      } 
+      else if (data.status === "COMPLETED" || data.status === "CANCELLED") {
+        alert(data.status === "COMPLETED" ? "You have arrived! Trip Complete." : "Trip was cancelled.");
+        
+        // Wipe the state clean so they can request a brand new ride!
+        setLiveDriverLocation(null);
+        setDestination(null);
+        setSearchQuery('');
+        setRequestStatus('');
+        setIsRequesting(false);
+      }
+    };
+
+    socket.on("driver_location_update", handleDriverMove);
+    socket.on("trip_status_updated", handleStatusUpdate);
+
+    return () => {
+      socket.off("driver_location_update", handleDriverMove);
+      socket.off("trip_status_updated", handleStatusUpdate);
+    };
+  }, [socket]);
+
+  // Search OpenStreetMap for places
   const handleSearch = async (e) => {
     const query = e.target.value;
     setSearchQuery(query);
@@ -64,7 +110,6 @@ export default function RideMap() {
     }
 
     try {
-      // We add a viewbox around Addis Ababa to prioritize local results
       const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${query}&limit=5&viewbox=38.6,8.8,38.9,9.1&bounded=1`);
       const data = await res.json();
       setSearchResults(data);
@@ -73,13 +118,12 @@ export default function RideMap() {
     }
   };
 
-  // 2. Calculate real distance using Leaflet's built-in math
+  // Calculate real distance
   const calculateFee = (lat, lng) => {
     const start = L.latLng(position[0], position[1]);
     const end = L.latLng(lat, lng);
     const distanceInMeters = start.distanceTo(end);
     
-    // Pricing Logic: 100 ETB Base Fare + 25 ETB per Kilometer
     const baseFare = 100;
     const perKmRate = 25;
     const totalFee = baseFare + (distanceInMeters / 1000) * perKmRate;
@@ -87,11 +131,11 @@ export default function RideMap() {
     setEstimatedFee(Math.round(totalFee));
   };
 
-  // 3. User clicks a place from the search results
+  // Select a place
   const handleSelectPlace = (place) => {
     const lat = parseFloat(place.lat);
     const lng = parseFloat(place.lon);
-    const placeName = place.display_name.split(',')[0]; // Grab just the main building/street name
+    const placeName = place.display_name.split(',')[0]; 
 
     setDestination({ name: placeName, lat, lng });
     setSearchQuery(placeName);
@@ -99,7 +143,7 @@ export default function RideMap() {
     calculateFee(lat, lng);
   };
 
-  // 4. Request the ride using the dynamically selected destination
+  // Request the ride
   const handleRequestRide = async () => {
     if (!destination) return;
     
@@ -111,7 +155,6 @@ export default function RideMap() {
     setIsRequesting(true);
     setRequestStatus('');
 
-    // Automatically assign the ride to the closest available driver
     const closestDriver = drivers[0]; 
 
     try {
@@ -139,6 +182,7 @@ export default function RideMap() {
     setSearchQuery('');
     setRequestStatus('');
     setIsRequesting(false);
+    setLiveDriverLocation(null); 
   };
 
   return (
@@ -189,13 +233,18 @@ export default function RideMap() {
           </Marker>
         )}
 
-        {/* Driver Markers */}
-        {drivers.map((driver) => (
-          <Marker key={driver.driver_id} position={[driver.latitude, driver.longitude]} icon={carIcon} />
-        ))}
+        {/* Render EITHER the moving driver OR the idle drivers */}
+        {liveDriverLocation ? (
+          <Marker position={liveDriverLocation} icon={carIcon}>
+            <Popup>Your Driver is Arriving!</Popup>
+          </Marker>
+        ) : (
+          drivers.map((driver) => (
+            <Marker key={driver.driver_id} position={[driver.latitude, driver.longitude]} icon={carIcon} />
+          ))
+        )}
       </MapContainer>
 
-      {/* CHECKOUT LAYER (Bottom) */}
       {/* CHECKOUT LAYER (Bottom) */}
       {destination && (
         <div className="absolute bottom-0 left-0 w-full p-4 z-[1000] pointer-events-none">

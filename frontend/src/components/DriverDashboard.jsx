@@ -28,76 +28,131 @@ const dropoffIcon = new L.Icon({
 export default function DriverDashboard() {
   const { authUser } = useAuthStore();
   const { socket } = useSocketStore();
+  
   const [incomingRide, setIncomingRide] = useState(null);
+  const [activeTrip, setActiveTrip] = useState(null);
   const [isAccepting, setIsAccepting] = useState(false);
+  const [currentLocation, setCurrentLocation] = useState([9.0310, 38.7410]); 
+  
   const [pickupAddress, setPickupAddress] = useState("Locating...");
   const [dropoffAddress, setDropoffAddress] = useState("Locating...");
-  const position = [9.0310, 38.7410]; 
 
+  const [tripStatus, setTripStatus] = useState("EN_ROUTE"); // "EN_ROUTE" or "IN_PROGRESS"
+  const [isUpdating, setIsUpdating] = useState(false);
+
+  // 1. Listen for new rides
   useEffect(() => {
     if (!socket) return;
-
     const handleNewRide = (rideData) => {
-      console.log("🔔 New Ride Request!", rideData);
       setIncomingRide(rideData);
     };
-
     socket.on("new_ride_request", handleNewRide);
-
-    return () => {
-      socket.off("new_ride_request", handleNewRide);
-    };
+    return () => socket.off("new_ride_request", handleNewRide);
   }, [socket]);
 
-  // 3. Fetch readable street names when a ride comes in
+  // 2. Fetch addresses safely
   useEffect(() => {
     if (!incomingRide) return;
 
     const fetchAddresses = async () => {
       try {
-        // Fetch Pickup Name
-        const pickupRes = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${incomingRide.pickup.lat}&lon=${incomingRide.pickup.lng}`);
-        const pickupData = await pickupRes.json();
-        setPickupAddress(pickupData.name || pickupData.display_name.split(',')[0]);
+        const headers = { 'Accept-Language': 'en,am' };
+        const osmBase = "https://nominatim.openstreetmap.org/reverse?format=json";
+        const devEmail = "&email=developer@rideapp.com"; 
 
-        // Fetch Dropoff Name
-        const dropoffRes = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${incomingRide.dropoff.lat}&lon=${incomingRide.dropoff.lng}`);
+        const pickupRes = await fetch(`${osmBase}&lat=${incomingRide.pickup.lat}&lon=${incomingRide.pickup.lng}${devEmail}`, { headers });
+        const pickupData = await pickupRes.json();
+        setPickupAddress(pickupData.name || pickupData.display_name?.split(',')[0] || "Pinned Location");
+
+        const dropoffRes = await fetch(`${osmBase}&lat=${incomingRide.dropoff.lat}&lon=${incomingRide.dropoff.lng}${devEmail}`, { headers });
         const dropoffData = await dropoffRes.json();
-        setDropoffAddress(dropoffData.name || dropoffData.display_name.split(',')[0]);
+        setDropoffAddress(dropoffData.name || dropoffData.display_name?.split(',')[0] || "Pinned Location");
       } catch (error) {
         console.error("Failed to fetch address names", error);
-        setPickupAddress("Unknown Pickup Location");
-        setDropoffAddress("Unknown Dropoff Location");
+        setPickupAddress("Coordinates Received");
+        setDropoffAddress("Coordinates Received");
       }
     };
 
     fetchAddresses();
   }, [incomingRide]);
 
-  // 2. Accept the Ride
-      const handleAccept = async () => {
-        if (!incomingRide) return;
-        setIsAccepting(true);
-        
-        try {
-          // FIX: Using exact property from your console log
-          await axiosInstance.put(`/trips/${incomingRide.tripId}/respond`, {
-            status: "ACCEPTED"
-          });
-          
-          alert("Ride Accepted! Head to the pickup location.");
-          setIncomingRide(null); 
-          
-        } catch (error) {
-          alert("Failed to accept ride: " + (error.response?.data?.message || error.message));
-        } finally {
-          setIsAccepting(false);
-        }
-      };
+  // 3. Simulate driving towards the target (Dynamic based on tripStatus)
+  useEffect(() => {
+    if (!activeTrip) return;
 
-  const handleDecline = () => {
-    setIncomingRide(null);
+    const interval = setInterval(() => {
+      setCurrentLocation((prev) => {
+        // Switch targets based on whether we have picked them up yet
+        const targetLat = tripStatus === "EN_ROUTE" ? activeTrip.pickup.lat : activeTrip.dropoff.lat;
+        const targetLng = tripStatus === "EN_ROUTE" ? activeTrip.pickup.lng : activeTrip.dropoff.lng;
+        
+        // Move 5% closer every 2 seconds
+        const newLat = prev[0] + (targetLat - prev[0]) * 0.05;
+        const newLng = prev[1] + (targetLng - prev[1]) * 0.05;
+        
+        socket?.emit("update_location", {
+          latitude: newLat,
+          longitude: newLng,
+          passengerId: activeTrip.passenger.id
+        });
+        
+        return [newLat, newLng];
+      });
+    }, 2000); 
+
+    return () => clearInterval(interval);
+  }, [activeTrip, tripStatus, socket]);
+
+  // Accept Ride Handler
+  const handleAccept = async () => {
+    if (!incomingRide) return;
+    setIsAccepting(true);
+    try {
+      await axiosInstance.put(`/trips/${incomingRide.tripId}/respond`, { status: "ACCEPTED" });
+      
+      setActiveTrip(incomingRide); 
+      setIncomingRide(null); 
+      
+    } catch (error) {
+      alert("Failed to accept ride: " + (error.response?.data?.message || error.message));
+    } finally {
+      setIsAccepting(false);
+    }
   };
+
+  // NEW: Pick up the passenger
+  const handlePickup = async () => {
+    setIsUpdating(true);
+    try {
+      await axiosInstance.put(`/trips/${activeTrip.tripId}/respond`, { status: "IN_PROGRESS" });
+      setTripStatus("IN_PROGRESS");
+    } catch (error) {
+      alert("Failed to update status: " + (error.response?.data?.message || error.message));
+    } finally {
+      setIsUpdating(false);
+    }
+  };
+
+  // NEW: Complete the trip
+  const handleComplete = async () => {
+    setIsUpdating(true);
+    try {
+      await axiosInstance.put(`/trips/${activeTrip.tripId}/respond`, { status: "COMPLETED" });
+      alert("Trip completed successfully! Earned " + activeTrip.fare + " ETB");
+      
+      // Reset the dashboard for the next ride
+      setActiveTrip(null);
+      setTripStatus("EN_ROUTE");
+    } catch (error) {
+      alert("Failed to complete trip: " + (error.response?.data?.message || error.message));
+    } finally {
+      setIsUpdating(false);
+    }
+  };
+
+  // Helper variable: Show pins for EITHER the incoming ride OR the active trip
+  const displayTrip = incomingRide || activeTrip;
 
   return (
     <div style={{ height: "100vh", width: "100vw", position: "relative", zIndex: 0 }}>
@@ -113,21 +168,21 @@ export default function DriverDashboard() {
         </div>
       </div>
 
-      <MapContainer center={position} zoom={14} style={{ height: "100%", width: "100%", zIndex: 10 }}>
+      <MapContainer center={currentLocation} zoom={14} style={{ height: "100%", width: "100%", zIndex: 10 }}>
         <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
         
-        {/* Driver's own car marker */}
-        <Marker position={position}>
+        {/* Driver's moving car */}
+        <Marker position={currentLocation}>
           <Popup>Your Vehicle</Popup>
         </Marker>
 
-        {/* NEW: Show the Passenger and Destination on the Driver's map! */}
-        {incomingRide && (
+        {/* The pins stay on the map even after accepting */}
+        {displayTrip && (
           <>
-            <Marker position={[incomingRide.pickup.lat, incomingRide.pickup.lng]} icon={pickupIcon}>
+            <Marker position={[displayTrip.pickup.lat, displayTrip.pickup.lng]} icon={pickupIcon}>
               <Popup>Passenger Pickup</Popup>
             </Marker>
-            <Marker position={[incomingRide.dropoff.lat, incomingRide.dropoff.lng]} icon={dropoffIcon}>
+            <Marker position={[displayTrip.dropoff.lat, displayTrip.dropoff.lng]} icon={dropoffIcon}>
               <Popup>Destination</Popup>
             </Marker>
           </>
@@ -138,13 +193,6 @@ export default function DriverDashboard() {
       {incomingRide && (
         <div className="absolute bottom-0 left-0 w-full p-4 z-[1000]">
           <div className="max-w-md mx-auto bg-white rounded-2xl shadow-2xl overflow-hidden border-2 border-black p-6 animate-bounce">
-            
-            <div className="text-center mb-4">
-              <span className="bg-black text-white text-xs font-bold px-3 py-1 rounded-full uppercase tracking-wider">
-                New Request
-              </span>
-            </div>
-
             <div className="flex justify-between items-center border-b border-gray-100 pb-4 mb-4">
               <div className="flex items-center gap-3">
                 {incomingRide.passenger?.profilePic ? (
@@ -165,7 +213,6 @@ export default function DriverDashboard() {
               </div>
             </div>
 
-            {/* NEW: Location summary block */}
             <div className="bg-gray-50 rounded-lg p-4 mb-4 border border-gray-100">
               <div className="flex items-start gap-3 mb-3">
                 <div className="w-3 h-3 rounded-full bg-blue-500 mt-1"></div>
@@ -184,24 +231,54 @@ export default function DriverDashboard() {
             </div>
 
             <div className="flex gap-3">
-              <button 
-                onClick={handleDecline}
-                className="w-1/3 bg-gray-100 text-gray-700 py-4 rounded-xl font-bold text-lg hover:bg-gray-200 transition-colors"
-              >
-                Decline
-              </button>
-              <button 
-                onClick={handleAccept}
-                disabled={isAccepting}
-                className="w-2/3 bg-green-500 text-white py-4 rounded-xl font-bold text-lg shadow-md hover:bg-green-600 disabled:bg-gray-400 transition-colors"
-              >
+              <button onClick={() => setIncomingRide(null)} className="w-1/3 bg-gray-100 text-gray-700 py-4 rounded-xl font-bold text-lg hover:bg-gray-200">Decline</button>
+              <button onClick={handleAccept} disabled={isAccepting} className="w-2/3 bg-green-500 text-white py-4 rounded-xl font-bold text-lg shadow-md hover:bg-green-600 disabled:bg-gray-400">
                 {isAccepting ? 'Accepting...' : 'Accept Ride'}
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* ACTIVE TRIP OVERLAY */}
+      {activeTrip && (
+        <div className="absolute bottom-0 left-0 w-full p-4 z-[1000]">
+          <div className="max-w-md mx-auto bg-black text-white rounded-2xl shadow-2xl overflow-hidden p-6 border-t-4 border-green-500">
+            
+            <h3 className="font-bold text-xl mb-1 text-green-400">
+              {tripStatus === "EN_ROUTE" ? "🚗 En route to passenger..." : "🛣️ Trip in progress..."}
+            </h3>
+            <p className="text-gray-300 mb-4">
+              {tripStatus === "EN_ROUTE" ? "Follow the map to the blue pickup pin." : "Drive to the red destination pin."}
+            </p>
+            
+            <div className="flex justify-between items-center border-t border-gray-700 pt-4 mb-4">
+              <span>{activeTrip.passenger?.name}</span>
+              <span className="font-bold">{activeTrip.fare} ETB</span>
+            </div>
+
+            {tripStatus === "EN_ROUTE" ? (
+              <button 
+                onClick={handlePickup} 
+                disabled={isUpdating}
+                className="w-full bg-blue-600 text-white py-4 rounded-xl font-bold text-lg shadow-md hover:bg-blue-700 transition-colors"
+              >
+                {isUpdating ? "Updating..." : "Passenger Picked Up"}
+              </button>
+            ) : (
+              <button 
+                onClick={handleComplete} 
+                disabled={isUpdating}
+                className="w-full bg-green-500 text-white py-4 rounded-xl font-bold text-lg shadow-md hover:bg-green-600 transition-colors"
+              >
+                {isUpdating ? "Updating..." : "Complete Dropoff"}
+              </button>
+            )}
 
           </div>
         </div>
       )}
+
     </div>
   );
 }
