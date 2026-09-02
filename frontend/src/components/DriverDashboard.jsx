@@ -32,25 +32,82 @@ export default function DriverDashboard() {
   const [incomingRide, setIncomingRide] = useState(null);
   const [activeTrip, setActiveTrip] = useState(null);
   const [isAccepting, setIsAccepting] = useState(false);
-  const [currentLocation, setCurrentLocation] = useState([9.0310, 38.7410]); 
+  
+  const [currentLocation, setCurrentLocation] = useState(null); 
   
   const [pickupAddress, setPickupAddress] = useState("Locating...");
   const [dropoffAddress, setDropoffAddress] = useState("Locating...");
 
-  const [tripStatus, setTripStatus] = useState("EN_ROUTE"); // "EN_ROUTE" or "IN_PROGRESS"
+  const [tripStatus, setTripStatus] = useState("EN_ROUTE");
   const [isUpdating, setIsUpdating] = useState(false);
 
-  // 1. Listen for new rides
+  // Fetch real GPS location when the dashboard loads
+  useEffect(() => {
+    if (navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(
+        (pos) => setCurrentLocation([pos.coords.latitude, pos.coords.longitude]),
+        (err) => {
+          console.warn("GPS failed, using fallback.", err);
+          setCurrentLocation([9.0310, 38.7410]); // Piassa fallback
+        },
+        { enableHighAccuracy: true }
+      );
+    } else {
+      setCurrentLocation([9.0310, 38.7410]);
+    }
+  }, []);
+
+  // Constantly emit idle location so the database knows where the driver is!
+  useEffect(() => {
+    if (!socket || activeTrip || !currentLocation) return; 
+
+    // Immediately emit location when the dashboard loads
+    socket.emit("update_location", {
+      latitude: currentLocation[0],
+      longitude: currentLocation[1]
+    });
+
+    // Keep emitting every 5 seconds while waiting for rides
+    const interval = setInterval(() => {
+      socket.emit("update_location", {
+        latitude: currentLocation[0],
+        longitude: currentLocation[1]
+      });
+    }, 5000);
+
+    return () => clearInterval(interval);
+  }, [socket, activeTrip, currentLocation]);
+
+  // NEW: Listen for new rides AND cancellations
   useEffect(() => {
     if (!socket) return;
+
     const handleNewRide = (rideData) => {
       setIncomingRide(rideData);
     };
+
+    // Handle passenger cancellation
+    const handleCancellation = (data) => {
+      alert(data.message || "The passenger cancelled the trip.");
+      
+      // Wipe the screen clean!
+      setIncomingRide(null);
+      setActiveTrip(null);
+      setTripStatus("EN_ROUTE");
+      setIsAccepting(false);
+      setIsUpdating(false);
+    };
+
     socket.on("new_ride_request", handleNewRide);
-    return () => socket.off("new_ride_request", handleNewRide);
+    socket.on("trip_cancelled", handleCancellation); // <-- NEW
+
+    return () => {
+      socket.off("new_ride_request", handleNewRide);
+      socket.off("trip_cancelled", handleCancellation); // <-- NEW
+    };
   }, [socket]);
 
-  // 2. Fetch addresses safely
+  // Fetch addresses safely
   useEffect(() => {
     if (!incomingRide) return;
 
@@ -77,13 +134,12 @@ export default function DriverDashboard() {
     fetchAddresses();
   }, [incomingRide]);
 
-  // 3. Simulate driving towards the target (Dynamic based on tripStatus)
+  // Simulate driving towards the target (Dynamic based on tripStatus)
   useEffect(() => {
     if (!activeTrip) return;
 
     const interval = setInterval(() => {
       setCurrentLocation((prev) => {
-        // Switch targets based on whether we have picked them up yet
         const targetLat = tripStatus === "EN_ROUTE" ? activeTrip.pickup.lat : activeTrip.dropoff.lat;
         const targetLng = tripStatus === "EN_ROUTE" ? activeTrip.pickup.lng : activeTrip.dropoff.lng;
         
@@ -110,10 +166,8 @@ export default function DriverDashboard() {
     setIsAccepting(true);
     try {
       await axiosInstance.put(`/trips/${incomingRide.tripId}/respond`, { status: "ACCEPTED" });
-      
       setActiveTrip(incomingRide); 
       setIncomingRide(null); 
-      
     } catch (error) {
       alert("Failed to accept ride: " + (error.response?.data?.message || error.message));
     } finally {
@@ -121,7 +175,7 @@ export default function DriverDashboard() {
     }
   };
 
-  // NEW: Pick up the passenger
+  // Pick up the passenger
   const handlePickup = async () => {
     setIsUpdating(true);
     try {
@@ -134,14 +188,13 @@ export default function DriverDashboard() {
     }
   };
 
-  // NEW: Complete the trip
+  // Complete the trip
   const handleComplete = async () => {
     setIsUpdating(true);
     try {
       await axiosInstance.put(`/trips/${activeTrip.tripId}/respond`, { status: "COMPLETED" });
       alert("Trip completed successfully! Earned " + activeTrip.fare + " ETB");
       
-      // Reset the dashboard for the next ride
       setActiveTrip(null);
       setTripStatus("EN_ROUTE");
     } catch (error) {
@@ -151,8 +204,18 @@ export default function DriverDashboard() {
     }
   };
 
-  // Helper variable: Show pins for EITHER the incoming ride OR the active trip
   const displayTrip = incomingRide || activeTrip;
+
+  // Driver Loading Screen while waiting for GPS
+  if (!currentLocation) {
+    return (
+      <div className="flex h-screen w-screen items-center justify-center bg-black flex-col">
+        <div className="h-12 w-12 animate-spin rounded-full border-b-4 border-green-500 mb-4"></div>
+        <h2 className="font-bold text-white">Starting GPS Module...</h2>
+        <p className="text-sm text-gray-400">Please allow location access.</p>
+      </div>
+    );
+  }
 
   return (
     <div style={{ height: "100vh", width: "100vw", position: "relative", zIndex: 0 }}>

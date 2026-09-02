@@ -2,9 +2,13 @@ import { useEffect } from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
 import { useAuthStore } from './store/useAuthStore';
 import { useSocketStore } from './store/useSocketStore';
+
+// Components
 import RideMap from './components/RideMap';
 import DriverDashboard from './components/DriverDashboard';
+import TripHistory from './components/TripHistory';
 import Login from './components/Login';
+import Sidebar from './components/Sidebar';
 
 function App() {
   const { authUser, isCheckingAuth, checkAuth } = useAuthStore();
@@ -30,23 +34,33 @@ function App() {
     );
   }
 
-  // Check which role the user holds (adjust this property name if your DB uses `role` instead of `activeRole`)
   const isDriver = authUser?.activeRole === 'driver' || authUser?.role === 'driver';
 
   return (
-    <Routes>
-      <Route 
-        path="/" 
-        element={
-          authUser ? (
-            isDriver ? <DriverDashboard /> : <RideMap />
-          ) : (
-            <Navigate to="/login" />
-          )
-        } 
-      />
-      <Route path="/login" element={!authUser ? <Login /> : <Navigate to="/" />} />
-    </Routes>
+    <>
+      <Sidebar /> 
+      
+      <Routes>
+        <Route 
+          path="/" 
+          element={
+            authUser ? (
+              isDriver ? <DriverDashboard /> : <RideMap />
+            ) : (
+              <Navigate to="/login" />
+            )
+          } 
+        />
+        <Route 
+          path="/history" 
+          element={authUser ? <TripHistory /> : <Navigate to="/login" />} 
+        />
+        <Route 
+          path="/login" 
+          element={!authUser ? <Login /> : <Navigate to="/" />} 
+        />
+      </Routes>
+    </>
   );
 }
 

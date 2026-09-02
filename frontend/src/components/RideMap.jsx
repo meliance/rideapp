@@ -37,15 +37,33 @@ export default function RideMap() {
   const [destination, setDestination] = useState(null);
   const [estimatedFee, setEstimatedFee] = useState(0);
   
-  // State for the moving driver
+  // State for the moving driver & active trip
   const [liveDriverLocation, setLiveDriverLocation] = useState(null);
+  const [currentTripId, setCurrentTripId] = useState(null); 
+  const [tripStatus, setTripStatus] = useState(null); // NEW: Track exact status to hide cancel button
 
-  const position = [9.0300, 38.7400]; // Passenger Pickup Location
+  const [position, setPosition] = useState(null);
+
+  // Fetch real GPS location when the app loads
+  useEffect(() => {
+    if (navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(
+        (pos) => setPosition([pos.coords.latitude, pos.coords.longitude]),
+        (err) => {
+          console.warn("GPS failed, using Piassa fallback.", err);
+          setPosition([9.0300, 38.7400]); // Fallback if user denies permission
+        },
+        { enableHighAccuracy: true }
+      );
+    } else {
+      setPosition([9.0300, 38.7400]);
+    }
+  }, []);
 
   // Poll for nearby drivers
   const fetchNearbyDrivers = async () => {
-    // Only poll if we aren't already tracking a live driver
-    if (liveDriverLocation) return; 
+    // Only poll if GPS is loaded and we aren't tracking a live driver
+    if (liveDriverLocation || !position) return; 
 
     try {
       const res = await axiosInstance.get(`/drivers/nearby?latitude=${position[0]}&longitude=${position[1]}`);
@@ -56,12 +74,13 @@ export default function RideMap() {
   };
 
   useEffect(() => {
+    if (!position) return; // Wait for GPS before polling
     fetchNearbyDrivers(); 
     const interval = setInterval(fetchNearbyDrivers, 10000); 
     return () => clearInterval(interval); 
-  }, [liveDriverLocation]); 
+  }, [liveDriverLocation, position]); 
 
-  // NEW: Listen for live driver movement AND status updates
+  // Listen for live driver movement AND status updates
   useEffect(() => {
     if (!socket) return;
 
@@ -72,6 +91,8 @@ export default function RideMap() {
 
     // 2. Status update listener
     const handleStatusUpdate = (data) => {
+      setTripStatus(data.status); // <-- NEW: Save status in state
+
       if (data.status === "ACCEPTED") {
         setRequestStatus("Driver accepted! They are on the way.");
       } 
@@ -87,6 +108,8 @@ export default function RideMap() {
         setSearchQuery('');
         setRequestStatus('');
         setIsRequesting(false);
+        setCurrentTripId(null);
+        setTripStatus(null); // Reset status
       }
     };
 
@@ -167,7 +190,10 @@ export default function RideMap() {
         fareEstimation: estimatedFee
       };
 
-      await axiosInstance.post('/trips/request', payload);
+      const res = await axiosInstance.post('/trips/request', payload);
+      
+      setCurrentTripId(res.data.trip.id); 
+      setTripStatus('REQUESTED'); // <-- Track initial state
       setRequestStatus('Ride requested! Waiting for driver to accept...');
       
     } catch (error) {
@@ -177,13 +203,36 @@ export default function RideMap() {
     }
   };
 
-  const handleCancel = () => {
+  // Cancel the ride and alert the backend
+  const handleCancel = async () => {
+    if (currentTripId) {
+      try {
+        await axiosInstance.put(`/trips/${currentTripId}/cancel`);
+      } catch (error) {
+        console.error("Failed to cancel trip on backend", error);
+      }
+    }
+    
+    // Clear local state
     setDestination(null);
     setSearchQuery('');
     setRequestStatus('');
     setIsRequesting(false);
     setLiveDriverLocation(null); 
+    setCurrentTripId(null);
+    setTripStatus(null);
   };
+
+  // Render a loading screen while waiting for GPS!
+  if (!position) {
+    return (
+      <div className="flex h-screen w-screen items-center justify-center bg-gray-50 flex-col">
+        <div className="h-12 w-12 animate-spin rounded-full border-b-4 border-black mb-4"></div>
+        <h2 className="font-bold text-gray-700">Finding your location...</h2>
+        <p className="text-sm text-gray-500">Please allow location access in your browser.</p>
+      </div>
+    );
+  }
 
   return (
     <div style={{ height: "100vh", width: "100vw", position: "relative", zIndex: 0 }}>
@@ -259,12 +308,17 @@ export default function RideMap() {
             {requestStatus ? (
               <div className="text-center p-4 bg-gray-50 rounded-xl border border-gray-100">
                 <p className="font-medium text-gray-900 mb-3">{requestStatus}</p>
-                <button 
-                  onClick={handleCancel}
-                  className="text-red-500 text-sm font-bold hover:text-red-700 transition-colors"
-                >
-                  Cancel Request
-                </button>
+                
+                {/* FIX: Only show Cancel button if they aren't in the car yet! */}
+                {tripStatus !== 'IN_PROGRESS' && (
+                  <button 
+                    onClick={handleCancel}
+                    className="text-red-500 text-sm font-bold hover:text-red-700 transition-colors mt-2"
+                  >
+                    Cancel Request
+                  </button>
+                )}
+                
               </div>
             ) : (
               <div className="flex gap-3">
