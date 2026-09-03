@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { MapContainer, TileLayer, Marker, Popup } from 'react-leaflet';
+import { MapContainer, TileLayer, Marker, Popup, Polyline } from 'react-leaflet'; // <-- ADDED Polyline
 import 'leaflet/dist/leaflet.css';
 import L from 'leaflet';
 import { axiosInstance } from '../lib/axios';
@@ -25,7 +25,7 @@ const destinationIcon = new L.Icon({
 });
 
 export default function RideMap() {
-  const { socket } = useSocketStore(); // Extract socket
+  const { socket } = useSocketStore();
 
   const [drivers, setDrivers] = useState([]);
   const [isRequesting, setIsRequesting] = useState(false);
@@ -40,9 +40,12 @@ export default function RideMap() {
   // State for the moving driver & active trip
   const [liveDriverLocation, setLiveDriverLocation] = useState(null);
   const [currentTripId, setCurrentTripId] = useState(null); 
-  const [tripStatus, setTripStatus] = useState(null); // NEW: Track exact status to hide cancel button
+  const [tripStatus, setTripStatus] = useState(null); 
 
   const [position, setPosition] = useState(null);
+
+  // <-- ADDED: State for the blue route line -->
+  const [routePath, setRoutePath] = useState([]);
 
   // Fetch real GPS location when the app loads
   useEffect(() => {
@@ -51,7 +54,7 @@ export default function RideMap() {
         (pos) => setPosition([pos.coords.latitude, pos.coords.longitude]),
         (err) => {
           console.warn("GPS failed, using Piassa fallback.", err);
-          setPosition([9.0300, 38.7400]); // Fallback if user denies permission
+          setPosition([9.0300, 38.7400]);
         },
         { enableHighAccuracy: true }
       );
@@ -62,7 +65,6 @@ export default function RideMap() {
 
   // Poll for nearby drivers
   const fetchNearbyDrivers = async () => {
-    // Only poll if GPS is loaded and we aren't tracking a live driver
     if (liveDriverLocation || !position) return; 
 
     try {
@@ -74,7 +76,7 @@ export default function RideMap() {
   };
 
   useEffect(() => {
-    if (!position) return; // Wait for GPS before polling
+    if (!position) return; 
     fetchNearbyDrivers(); 
     const interval = setInterval(fetchNearbyDrivers, 10000); 
     return () => clearInterval(interval); 
@@ -84,14 +86,13 @@ export default function RideMap() {
   useEffect(() => {
     if (!socket) return;
 
-    // 1. Movement listener
     const handleDriverMove = (coords) => {
       setLiveDriverLocation([coords.latitude, coords.longitude]);
     };
 
-    // 2. Status update listener
     const handleStatusUpdate = (data) => {
-      setTripStatus(data.status); // <-- NEW: Save status in state
+      setTripStatus(data.status);
+      setRoutePath([]); // Clear old line on status change
 
       if (data.status === "ACCEPTED") {
         setRequestStatus("Driver accepted! They are on the way.");
@@ -100,16 +101,19 @@ export default function RideMap() {
         setRequestStatus("You are in the car. Enjoy the ride!");
       } 
       else if (data.status === "COMPLETED" || data.status === "CANCELLED") {
-        alert(data.status === "COMPLETED" ? "You have arrived! Trip Complete." : "Trip was cancelled.");
         
-        // Wipe the state clean so they can request a brand new ride!
-        setLiveDriverLocation(null);
-        setDestination(null);
-        setSearchQuery('');
-        setRequestStatus('');
-        setIsRequesting(false);
-        setCurrentTripId(null);
-        setTripStatus(null); // Reset status
+        setTimeout(() => {
+          alert(data.status === "COMPLETED" ? `You have arrived! Trip Complete with total fee: ${estimatedFee} ETB` : "Trip was cancelled.");
+          
+          setLiveDriverLocation(null);
+          setDestination(null);
+          setSearchQuery('');
+          setRequestStatus('');
+          setIsRequesting(false);
+          setCurrentTripId(null);
+          setTripStatus(null); 
+          setRoutePath([]); // Clear the line at the end
+        }, 100);
       }
     };
 
@@ -120,7 +124,40 @@ export default function RideMap() {
       socket.off("driver_location_update", handleDriverMove);
       socket.off("trip_status_updated", handleStatusUpdate);
     };
-  }, [socket]);
+  }, [socket, estimatedFee]);
+
+  // <-- ADDED: Fetch the blue route line from OSRM -->
+  useEffect(() => {
+    if (!tripStatus || !position || routePath.length > 0) return;
+
+    const getRoute = async () => {
+      try {
+        let start, end;
+        if (tripStatus === 'ACCEPTED') {
+          if (!liveDriverLocation) return; 
+          start = liveDriverLocation;
+          end = position; // Driver driving to passenger
+        } else if (tripStatus === 'IN_PROGRESS') {
+          start = position; 
+          end = [destination.lat, destination.lng]; // Passenger driving to destination
+        } else {
+          return;
+        }
+
+        const url = `https://router.project-osrm.org/route/v1/driving/${start[1]},${start[0]};${end[1]},${end[0]}?overview=full&geometries=geojson`;
+        const res = await fetch(url);
+        const data = await res.json();
+        if (data.routes && data.routes.length > 0) {
+          const path = data.routes[0].geometry.coordinates.map(c => [c[1], c[0]]);
+          setRoutePath(path);
+        }
+      } catch (error) {
+        console.error("Routing error", error);
+      }
+    };
+
+    getRoute();
+  }, [tripStatus, liveDriverLocation, position, destination, routePath.length]);
 
   // Search OpenStreetMap for places
   const handleSearch = async (e) => {
@@ -133,7 +170,12 @@ export default function RideMap() {
     }
 
     try {
-      const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${query}&limit=5&viewbox=38.6,8.8,38.9,9.1&bounded=1`);
+      const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&limit=5&countrycodes=et&email=developer@rideapp.com`;
+      
+      const res = await fetch(url);
+      
+      if (!res.ok) throw new Error("API rejected the request");
+      
       const data = await res.json();
       setSearchResults(data);
     } catch (error) {
@@ -193,7 +235,7 @@ export default function RideMap() {
       const res = await axiosInstance.post('/trips/request', payload);
       
       setCurrentTripId(res.data.trip.id); 
-      setTripStatus('REQUESTED'); // <-- Track initial state
+      setTripStatus('REQUESTED'); 
       setRequestStatus('Ride requested! Waiting for driver to accept...');
       
     } catch (error) {
@@ -221,6 +263,7 @@ export default function RideMap() {
     setLiveDriverLocation(null); 
     setCurrentTripId(null);
     setTripStatus(null);
+    setRoutePath([]); // Clear the line
   };
 
   // Render a loading screen while waiting for GPS!
@@ -270,6 +313,9 @@ export default function RideMap() {
       <MapContainer center={position} zoom={14} style={{ height: "100%", width: "100%", zIndex: 10 }}>
         <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
         
+        {/* <-- ADDED: Draw the Blue Route! --> */}
+        {routePath.length > 0 && <Polyline positions={routePath} color="#3b82f6" weight={6} opacity={0.8} />}
+
         {/* Passenger Marker */}
         <Marker position={position}>
           <Popup>Your Pickup Location</Popup>
@@ -307,9 +353,11 @@ export default function RideMap() {
 
             {requestStatus ? (
               <div className="text-center p-4 bg-gray-50 rounded-xl border border-gray-100">
-                <p className="font-medium text-gray-900 mb-3">{requestStatus}</p>
                 
-                {/* FIX: Only show Cancel button if they aren't in the car yet! */}
+                <p className={`font-medium mb-3 ${requestStatus === 'No drivers available nearby.' ? 'text-red-500 font-bold' : 'text-gray-900'}`}>
+                  {requestStatus}
+                </p>
+                
                 {tripStatus !== 'IN_PROGRESS' && (
                   <button 
                     onClick={handleCancel}

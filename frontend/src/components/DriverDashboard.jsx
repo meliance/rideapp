@@ -1,9 +1,10 @@
 import { useState, useEffect } from 'react';
-import { MapContainer, TileLayer, Marker, Popup } from 'react-leaflet';
+import { MapContainer, TileLayer, Marker, Popup, Polyline } from 'react-leaflet';
 import 'leaflet/dist/leaflet.css';
 import L from 'leaflet';
 import { axiosInstance } from '../lib/axios';
 import { useSocketStore } from '../store/useSocketStore';
+import { useAuthStore } from '../store/useAuthStore';
 
 // --- VITE DEFAULT ICON FIX ---
 import icon from 'leaflet/dist/images/marker-icon.png';
@@ -12,234 +13,269 @@ import iconShadow from 'leaflet/dist/images/marker-shadow.png';
 let DefaultIcon = L.icon({ iconUrl: icon, shadowUrl: iconShadow });
 L.Marker.prototype.options.icon = DefaultIcon;
 
-const carIcon = new L.Icon({
-  iconUrl: 'https://cdn-icons-png.flaticon.com/512/3204/3204121.png', 
-  iconSize: [32, 32],
-  iconAnchor: [16, 16]
+const pickupIcon = new L.Icon({
+  iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-blue.png',
+  iconSize: [25, 41],
+  iconAnchor: [12, 41]
 });
 
-const destinationIcon = new L.Icon({
+const dropoffIcon = new L.Icon({
   iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-red.png',
   iconSize: [25, 41],
-  iconAnchor: [12, 41],
+  iconAnchor: [12, 41]
 });
 
-export default function RideMap() {
+export default function DriverDashboard() {
+  const { authUser } = useAuthStore();
   const { socket } = useSocketStore();
-
-  const [drivers, setDrivers] = useState([]);
-  const [isRequesting, setIsRequesting] = useState(false);
-  const [requestStatus, setRequestStatus] = useState('');
   
-  const [searchQuery, setSearchQuery] = useState('');
-  const [searchResults, setSearchResults] = useState([]);
-  const [destination, setDestination] = useState(null);
-  const [estimatedFee, setEstimatedFee] = useState(0);
+  const [incomingRide, setIncomingRide] = useState(null);
+  const [activeTrip, setActiveTrip] = useState(null);
+  const [isAccepting, setIsAccepting] = useState(false);
   
-  const [liveDriverLocation, setLiveDriverLocation] = useState(null);
-  const [currentTripId, setCurrentTripId] = useState(null); 
-  const [tripStatus, setTripStatus] = useState(null); 
+  const [currentLocation, setCurrentLocation] = useState(null); 
+  
+  const [pickupAddress, setPickupAddress] = useState("Locating...");
+  const [dropoffAddress, setDropoffAddress] = useState("Locating...");
 
-  const [position, setPosition] = useState(null);
+  const [tripStatus, setTripStatus] = useState("EN_ROUTE");
+  const [isUpdating, setIsUpdating] = useState(false);
 
+  // NEW: State for drawing the route and simulating driving along it
+  const [routePath, setRoutePath] = useState([]);
+  const [routeIndex, setRouteIndex] = useState(0);
+
+  // Fetch real GPS location when the dashboard loads
   useEffect(() => {
     if (navigator.geolocation) {
       navigator.geolocation.getCurrentPosition(
-        (pos) => setPosition([pos.coords.latitude, pos.coords.longitude]),
+        (pos) => setCurrentLocation([pos.coords.latitude, pos.coords.longitude]),
         (err) => {
-          console.warn("GPS failed, using Piassa fallback.", err);
-          setPosition([9.0300, 38.7400]); 
+          console.warn("GPS failed, using fallback.", err);
+          setCurrentLocation([9.0310, 38.7410]); // Piassa fallback
         },
         { enableHighAccuracy: true }
       );
     } else {
-      setPosition([9.0300, 38.7400]);
+      setCurrentLocation([9.0310, 38.7410]);
     }
   }, []);
 
-  const fetchNearbyDrivers = async () => {
-    if (liveDriverLocation || !position) return; 
-
-    try {
-      const res = await axiosInstance.get(`/drivers/nearby?latitude=${position[0]}&longitude=${position[1]}`);
-      setDrivers(res.data.drivers || []);
-    } catch (error) {
-      console.error("Failed to fetch drivers", error);
-    }
-  };
-
+  // Constantly emit idle location so the database knows where the driver is!
   useEffect(() => {
-    if (!position) return; 
-    fetchNearbyDrivers(); 
-    const interval = setInterval(fetchNearbyDrivers, 10000); 
-    return () => clearInterval(interval); 
-  }, [liveDriverLocation, position]); 
+    if (!socket || activeTrip || !currentLocation) return; 
 
-  //Auto-timeout if no driver accepts within 60 seconds
-  useEffect(() => {
-    let timeout;
-    
-    // Only start the timer if they are actively waiting for a driver
-    if (tripStatus === 'REQUESTED' && currentTripId) {
-      timeout = setTimeout(async () => {
-        // 1. Cancel the trip on the backend
-        try {
-          await axiosInstance.put(`/trips/${currentTripId}/cancel`);
-        } catch (error) {
-          console.error("Auto-cancel failed", error);
-        }
-        
-        // 2. Alert the user
-        alert("No drivers responded in time. Please try again.");
-        
-        // 3. Reset the UI completely
-        setDestination(null);
-        setSearchQuery('');
-        setRequestStatus('');
-        setIsRequesting(false);
-        setLiveDriverLocation(null); 
-        setCurrentTripId(null);
-        setTripStatus(null);
-      }, 60000); // 60,000 ms = 1 minute
-    }
+    // Immediately emit location when the dashboard loads
+    socket.emit("update_location", {
+      latitude: currentLocation[0],
+      longitude: currentLocation[1]
+    });
 
-    // Cleanup function: destroys the timer if the component unmounts OR if tripStatus changes (e.g. driver accepted)
-    return () => clearTimeout(timeout);
-  }, [tripStatus, currentTripId]);
+    // Keep emitting every 5 seconds while waiting for rides
+    const interval = setInterval(() => {
+      socket.emit("update_location", {
+        latitude: currentLocation[0],
+        longitude: currentLocation[1]
+      });
+    }, 5000);
 
+    return () => clearInterval(interval);
+  }, [socket, activeTrip, currentLocation]);
+
+  // Listen for new rides AND cancellations
   useEffect(() => {
     if (!socket) return;
 
-    const handleDriverMove = (coords) => {
-      setLiveDriverLocation([coords.latitude, coords.longitude]);
+    const handleNewRide = (rideData) => {
+      setIncomingRide(rideData);
     };
 
-    const handleStatusUpdate = (data) => {
-      setTripStatus(data.status); 
-
-      if (data.status === "ACCEPTED") {
-        setRequestStatus("Driver accepted! They are on the way.");
-      } 
-      else if (data.status === "IN_PROGRESS") {
-        setRequestStatus("You are in the car. Enjoy the ride!");
-      } 
-      else if (data.status === "COMPLETED" || data.status === "CANCELLED") {
-        alert(data.status === "COMPLETED" ? "You have arrived! Trip Complete." : "Trip was cancelled.");
-        
-        setLiveDriverLocation(null);
-        setDestination(null);
-        setSearchQuery('');
-        setRequestStatus('');
-        setIsRequesting(false);
-        setCurrentTripId(null);
-        setTripStatus(null); 
-      }
+    // Handle passenger cancellation
+    const handleCancellation = (data) => {
+      alert(data.message || "The passenger cancelled the trip.");
+      
+      // Wipe the screen clean!
+      setIncomingRide(null);
+      setActiveTrip(null);
+      setTripStatus("EN_ROUTE");
+      setIsAccepting(false);
+      setIsUpdating(false);
+      setRoutePath([]); // Clear the route line
     };
 
-    socket.on("driver_location_update", handleDriverMove);
-    socket.on("trip_status_updated", handleStatusUpdate);
+    socket.on("new_ride_request", handleNewRide);
+    socket.on("trip_cancelled", handleCancellation); 
 
     return () => {
-      socket.off("driver_location_update", handleDriverMove);
-      socket.off("trip_status_updated", handleStatusUpdate);
+      socket.off("new_ride_request", handleNewRide);
+      socket.off("trip_cancelled", handleCancellation); 
     };
   }, [socket]);
 
-  const handleSearch = async (e) => {
-    const query = e.target.value;
-    setSearchQuery(query);
-    
-    if (query.length < 3) {
-      setSearchResults([]);
-      return;
-    }
+  // Fetch addresses safely
+  useEffect(() => {
+    if (!incomingRide) return;
 
-    try {
-      const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${query}&limit=5&viewbox=38.6,8.8,38.9,9.1&bounded=1`);
-      const data = await res.json();
-      setSearchResults(data);
-    } catch (error) {
-      console.error("Search failed:", error);
-    }
-  };
-
-  const calculateFee = (lat, lng) => {
-    const start = L.latLng(position[0], position[1]);
-    const end = L.latLng(lat, lng);
-    const distanceInMeters = start.distanceTo(end);
-    
-    const baseFare = 100;
-    const perKmRate = 25;
-    const totalFee = baseFare + (distanceInMeters / 1000) * perKmRate;
-    
-    setEstimatedFee(Math.round(totalFee));
-  };
-
-  const handleSelectPlace = (place) => {
-    const lat = parseFloat(place.lat);
-    const lng = parseFloat(place.lon);
-    const placeName = place.display_name.split(',')[0]; 
-
-    setDestination({ name: placeName, lat, lng });
-    setSearchQuery(placeName);
-    setSearchResults([]);
-    calculateFee(lat, lng);
-  };
-
-  const handleRequestRide = async () => {
-    if (!destination || drivers.length === 0) return; // Safety block
-
-    setIsRequesting(true);
-    setRequestStatus('');
-
-    const closestDriver = drivers[0]; 
-
-    try {
-      const payload = {
-        driverId: closestDriver.driver_id,
-        pickupLat: position[0],
-        pickupLng: position[1],
-        dropoffLat: destination.lat,
-        dropoffLng: destination.lng,
-        fareEstimation: estimatedFee
-      };
-
-      const res = await axiosInstance.post('/trips/request', payload);
-      
-      setCurrentTripId(res.data.trip.id); 
-      setTripStatus('REQUESTED'); 
-      setRequestStatus('Waiting for driver to accept...'); // Simplified text
-      
-    } catch (error) {
-      setRequestStatus(error.response?.data?.message || 'Failed to request ride');
-      setIsRequesting(false); // Reset so they can try again
-    } 
-  };
-
-  const handleCancel = async () => {
-    if (currentTripId) {
+    const fetchAddresses = async () => {
       try {
-        await axiosInstance.put(`/trips/${currentTripId}/cancel`);
+        const headers = { 'Accept-Language': 'en,am' };
+        const osmBase = "https://nominatim.openstreetmap.org/reverse?format=json";
+        const devEmail = "&email=developer@rideapp.com"; 
+
+        const pickupRes = await fetch(`${osmBase}&lat=${incomingRide.pickup.lat}&lon=${incomingRide.pickup.lng}${devEmail}`, { headers });
+        const pickupData = await pickupRes.json();
+        setPickupAddress(pickupData.name || pickupData.display_name?.split(',')[0] || "Pinned Location");
+
+        const dropoffRes = await fetch(`${osmBase}&lat=${incomingRide.dropoff.lat}&lon=${incomingRide.dropoff.lng}${devEmail}`, { headers });
+        const dropoffData = await dropoffRes.json();
+        setDropoffAddress(dropoffData.name || dropoffData.display_name?.split(',')[0] || "Pinned Location");
       } catch (error) {
-        console.error("Failed to cancel trip on backend", error);
+        console.error("Failed to fetch address names", error);
+        setPickupAddress("Coordinates Received");
+        setDropoffAddress("Coordinates Received");
       }
+    };
+
+    fetchAddresses();
+  }, [incomingRide]);
+
+  // NEW: Fetch real road geometry from Open Source Routing Machine
+  useEffect(() => {
+    if (!activeTrip || !currentLocation) return;
+    const getRoute = async () => {
+      const targetLat = tripStatus === "EN_ROUTE" ? activeTrip.pickup.lat : activeTrip.dropoff.lat;
+      const targetLng = tripStatus === "EN_ROUTE" ? activeTrip.pickup.lng : activeTrip.dropoff.lng;
+      try {
+        const url = `https://router.project-osrm.org/route/v1/driving/${currentLocation[1]},${currentLocation[0]};${targetLng},${targetLat}?overview=full&geometries=geojson`;
+        const res = await fetch(url);
+        const data = await res.json();
+        if (data.routes && data.routes.length > 0) {
+          const path = data.routes[0].geometry.coordinates.map(c => [c[1], c[0]]);
+          setRoutePath(path);
+          setRouteIndex(0);
+        }
+      } catch (error) {
+        console.error("Routing error", error);
+      }
+    };
+    getRoute();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTrip, tripStatus]); 
+
+  // UPDATE: Simulate driving along the ACTUAL roads
+  useEffect(() => {
+    if (!activeTrip) return;
+
+    const interval = setInterval(() => {
+      if (routePath.length > 0) {
+        setRouteIndex((prevIndex) => {
+          const step = Math.max(1, Math.floor(routePath.length / 15)); 
+          const nextIndex = prevIndex + step;
+          
+          if (nextIndex >= routePath.length) {
+            const finalCoords = routePath[routePath.length - 1];
+            setCurrentLocation(finalCoords);
+            socket?.emit("update_location", { latitude: finalCoords[0], longitude: finalCoords[1], passengerId: activeTrip.passenger.id });
+            return routePath.length;
+          }
+
+          const nextCoords = routePath[nextIndex];
+          setCurrentLocation(nextCoords);
+          socket?.emit("update_location", { latitude: nextCoords[0], longitude: nextCoords[1], passengerId: activeTrip.passenger.id });
+          return nextIndex;
+        });
+      } else {
+        // Fallback straight-line
+        setCurrentLocation((prev) => {
+          const targetLat = tripStatus === "EN_ROUTE" ? activeTrip.pickup.lat : activeTrip.dropoff.lat;
+          const targetLng = tripStatus === "EN_ROUTE" ? activeTrip.pickup.lng : activeTrip.dropoff.lng;
+          
+          const newLat = prev[0] + (targetLat - prev[0]) * 0.05;
+          const newLng = prev[1] + (targetLng - prev[1]) * 0.05;
+          
+          socket?.emit("update_location", {
+            latitude: newLat,
+            longitude: newLng,
+            passengerId: activeTrip.passenger.id
+          });
+          
+          return [newLat, newLng];
+        });
+      }
+    }, 2000); 
+
+    return () => clearInterval(interval);
+  }, [activeTrip, tripStatus, routePath, socket]);
+
+  // Accept Ride Handler
+  const handleAccept = async () => {
+    if (!incomingRide) return;
+    setIsAccepting(true);
+    try {
+      await axiosInstance.put(`/trips/${incomingRide.tripId}/respond`, { status: "ACCEPTED" });
+      setActiveTrip(incomingRide); 
+      setIncomingRide(null); 
+    } catch (error) {
+      alert("Failed to accept ride: " + (error.response?.data?.message || error.message));
+    } finally {
+      setIsAccepting(false);
     }
-    
-    setDestination(null);
-    setSearchQuery('');
-    setRequestStatus('');
-    setIsRequesting(false);
-    setLiveDriverLocation(null); 
-    setCurrentTripId(null);
-    setTripStatus(null);
   };
 
-  if (!position) {
+  // FULLY FUNCTIONAL DECLINE HANDLER
+  const handleDecline = async () => {
+    if (!incomingRide) return;
+    try {
+      // Alert the backend that the driver said no
+      await axiosInstance.put(`/trips/${incomingRide.tripId}/respond`, { status: "CANCELLED" });
+    } catch (error) {
+      console.error("Failed to decline ride:", error);
+    } finally {
+      // Clear the screen so they can receive a new ping
+      setIncomingRide(null);
+    }
+  };
+
+  // Pick up the passenger
+  const handlePickup = async () => {
+    setIsUpdating(true);
+    try {
+      await axiosInstance.put(`/trips/${activeTrip.tripId}/respond`, { status: "IN_PROGRESS" });
+      setTripStatus("IN_PROGRESS");
+      setRoutePath([]); // Clear old line, triggers new fetch!
+    } catch (error) {
+      alert("Failed to update status: " + (error.response?.data?.message || error.message));
+    } finally {
+      setIsUpdating(false);
+    }
+  };
+
+  // Complete the trip
+  const handleComplete = async () => {
+    setIsUpdating(true);
+    try {
+      await axiosInstance.put(`/trips/${activeTrip.tripId}/respond`, { status: "COMPLETED" });
+      alert("Trip completed successfully! Earned " + activeTrip.fare + " ETB");
+      
+      setActiveTrip(null);
+      setTripStatus("EN_ROUTE");
+      setRoutePath([]);
+    } catch (error) {
+      alert("Failed to complete trip: " + (error.response?.data?.message || error.message));
+    } finally {
+      setIsUpdating(false);
+    }
+  };
+
+  const displayTrip = incomingRide || activeTrip;
+
+  // Driver Loading Screen while waiting for GPS
+  if (!currentLocation) {
     return (
-      <div className="flex h-screen w-screen items-center justify-center bg-gray-50 flex-col">
-        <div className="h-12 w-12 animate-spin rounded-full border-b-4 border-black mb-4"></div>
-        <h2 className="font-bold text-gray-700">Finding your location...</h2>
-        <p className="text-sm text-gray-500">Please allow location access in your browser.</p>
+      <div className="flex h-screen w-screen items-center justify-center bg-black flex-col">
+        <div className="h-12 w-12 animate-spin rounded-full border-b-4 border-green-500 mb-4"></div>
+        <h2 className="font-bold text-white">Starting GPS Module...</h2>
+        <p className="text-sm text-gray-400">Please allow location access.</p>
       </div>
     );
   }
@@ -247,107 +283,128 @@ export default function RideMap() {
   return (
     <div style={{ height: "100vh", width: "100vw", position: "relative", zIndex: 0 }}>
       
-      {/* SEARCH BAR LAYER */}
+      {/* DRIVER STATUS BAR */}
       <div className="absolute top-4 left-0 w-full px-4 z-[1000]">
-        <div className="max-w-md mx-auto relative">
-          <input 
-            type="text" 
-            placeholder="Where to?" 
-            value={searchQuery}
-            onChange={handleSearch}
-            className="w-full bg-white rounded-xl shadow-lg px-5 py-4 text-lg font-bold border-2 border-transparent focus:border-black focus:outline-none transition-all"
-          />
-          
-          {searchResults.length > 0 && (
-            <div className="absolute top-full mt-2 w-full bg-white rounded-xl shadow-xl overflow-hidden border border-gray-100">
-              {searchResults.map((place) => (
-                <div 
-                  key={place.place_id}
-                  onClick={() => handleSelectPlace(place)}
-                  className="px-5 py-3 hover:bg-gray-50 cursor-pointer border-b border-gray-100 last:border-0"
-                >
-                  <p className="font-bold text-gray-900 truncate">{place.display_name.split(',')[0]}</p>
-                  <p className="text-xs text-gray-500 truncate">{place.display_name}</p>
-                </div>
-              ))}
-            </div>
-          )}
+        <div className="max-w-md mx-auto bg-black text-white rounded-xl shadow-lg px-5 py-4 flex justify-between items-center">
+          <div>
+            <p className="font-bold text-lg">{authUser?.name}</p>
+            <p className="text-sm text-green-400">Online & Available</p>
+          </div>
+          <div className="h-4 w-4 bg-green-500 rounded-full animate-pulse"></div>
         </div>
       </div>
 
-      {/* MAP LAYER */}
-      <MapContainer center={position} zoom={14} style={{ height: "100%", width: "100%", zIndex: 10 }}>
+      <MapContainer center={currentLocation} zoom={14} style={{ height: "100%", width: "100%", zIndex: 10 }}>
         <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
         
-        <Marker position={position}>
-          <Popup>Your Pickup Location</Popup>
+        {/* Draw the Blue Route! */}
+        {routePath.length > 0 && <Polyline positions={routePath} color="#3b82f6" weight={6} opacity={0.8} />}
+
+        {/* Driver's moving car */}
+        <Marker position={currentLocation}>
+          <Popup>Your Vehicle</Popup>
         </Marker>
 
-        {destination && (
-          <Marker position={[destination.lat, destination.lng]} icon={destinationIcon}>
-            <Popup>{destination.name}</Popup>
-          </Marker>
-        )}
-
-        {liveDriverLocation ? (
-          <Marker position={liveDriverLocation} icon={carIcon}>
-            <Popup>Your Driver is Arriving!</Popup>
-          </Marker>
-        ) : (
-          drivers.map((driver) => (
-            <Marker key={driver.driver_id} position={[driver.latitude, driver.longitude]} icon={carIcon} />
-          ))
+        {/* The pins stay on the map even after accepting */}
+        {displayTrip && (
+          <>
+            <Marker position={[displayTrip.pickup.lat, displayTrip.pickup.lng]} icon={pickupIcon}>
+              <Popup>Passenger Pickup</Popup>
+            </Marker>
+            <Marker position={[displayTrip.dropoff.lat, displayTrip.dropoff.lng]} icon={dropoffIcon}>
+              <Popup>Destination</Popup>
+            </Marker>
+          </>
         )}
       </MapContainer>
 
-      {/* CHECKOUT LAYER */}
-      {destination && (
-        <div className="absolute bottom-0 left-0 w-full p-4 z-[1000] pointer-events-none">
-          <div className="max-w-md mx-auto bg-white rounded-2xl shadow-2xl overflow-hidden pointer-events-auto border border-gray-100 p-6">
-            
-            <h3 className="text-xl font-bold text-gray-900 mb-1">Ride to {destination.name}</h3>
-            <div className="flex justify-between items-center border-t border-gray-100 pt-4 mb-4 mt-2">
-              <span className="text-gray-500 font-medium">Standard Ride</span>
-              <span className="font-black text-2xl text-gray-900">{estimatedFee} ETB</span>
+      {/* INCOMING RIDE OVERLAY */}
+      {incomingRide && (
+        <div className="absolute bottom-0 left-0 w-full p-4 z-[1000]">
+          <div className="max-w-md mx-auto bg-white rounded-2xl shadow-2xl overflow-hidden border-2 border-black p-6 animate-bounce">
+            <div className="flex justify-between items-center border-b border-gray-100 pb-4 mb-4">
+              <div className="flex items-center gap-3">
+                {incomingRide.passenger?.profilePic ? (
+                  <img src={incomingRide.passenger.profilePic} alt="Passenger" className="w-12 h-12 rounded-full object-cover" />
+                ) : (
+                  <div className="w-12 h-12 rounded-full bg-gray-200 flex items-center justify-center">
+                    <span className="text-gray-500 font-bold">P</span>
+                  </div>
+                )}
+                <div>
+                  <p className="text-sm text-gray-500 font-medium">Passenger</p>
+                  <p className="font-bold text-gray-900">{incomingRide.passenger?.name}</p>
+                </div>
+              </div>
+              <div className="text-right">
+                <p className="text-sm text-gray-500 font-medium">Fare</p>
+                <p className="font-black text-2xl text-gray-900">{incomingRide.fare} ETB</p>
+              </div>
             </div>
 
-            {requestStatus ? (
-              <div className="text-center p-4 bg-gray-50 rounded-xl border border-gray-100 flex flex-col items-center">
-                
-                {/*Animated spinner while waiting for driver to accept */}
-                {tripStatus === 'REQUESTED' && (
-                  <div className="h-8 w-8 animate-spin rounded-full border-b-4 border-black mb-3"></div>
-                )}
-                
-                <p className="font-medium text-gray-900 mb-3">{requestStatus}</p>
-                
-                {tripStatus !== 'IN_PROGRESS' && (
-                  <button 
-                    onClick={handleCancel}
-                    className="text-red-500 text-sm font-bold hover:text-red-700 transition-colors mt-2"
-                  >
-                    Cancel Request
-                  </button>
-                )}
+            <div className="bg-gray-50 rounded-lg p-4 mb-4 border border-gray-100">
+              <div className="flex items-start gap-3 mb-3">
+                <div className="w-3 h-3 rounded-full bg-blue-500 mt-1"></div>
+                <div>
+                  <p className="text-xs text-gray-500 font-bold uppercase tracking-wider">Pickup</p>
+                  <p className="font-semibold text-gray-900">{pickupAddress}</p>
+                </div>
               </div>
+              <div className="flex items-start gap-3">
+                <div className="w-3 h-3 rounded-full bg-red-500 mt-1"></div>
+                <div>
+                  <p className="text-xs text-gray-500 font-bold uppercase tracking-wider">Dropoff</p>
+                  <p className="font-semibold text-gray-900">{dropoffAddress}</p>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex gap-3">
+              {/* FIX: Now securely hits the backend using handleDecline */}
+              <button onClick={handleDecline} className="w-1/3 bg-gray-100 text-gray-700 py-4 rounded-xl font-bold text-lg hover:bg-gray-200">Decline</button>
+              <button onClick={handleAccept} disabled={isAccepting} className="w-2/3 bg-green-500 text-white py-4 rounded-xl font-bold text-lg shadow-md hover:bg-green-600 disabled:bg-gray-400">
+                {isAccepting ? 'Accepting...' : 'Accept Ride'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ACTIVE TRIP OVERLAY */}
+      {activeTrip && (
+        <div className="absolute bottom-0 left-0 w-full p-4 z-[1000]">
+          <div className="max-w-md mx-auto bg-black text-white rounded-2xl shadow-2xl overflow-hidden p-6 border-t-4 border-green-500">
+            
+            <h3 className="font-bold text-xl mb-1 text-green-400">
+              {tripStatus === "EN_ROUTE" ? "🚗 En route to passenger..." : "🛣️ Trip in progress..."}
+            </h3>
+            <p className="text-gray-300 mb-4">
+              {tripStatus === "EN_ROUTE" ? "Follow the map to the passenger destination." : "Drive to the destination pin."}
+            </p>
+            
+            <div className="flex justify-between items-center border-t border-gray-700 pt-4 mb-4">
+              <span>{activeTrip.passenger?.name}</span>
+              <span className="font-bold">{activeTrip.fare} ETB</span>
+            </div>
+
+            {tripStatus === "EN_ROUTE" ? (
+              <button 
+                onClick={handlePickup} 
+                disabled={isUpdating}
+                className="w-full bg-blue-600 text-white py-4 rounded-xl font-bold text-lg shadow-md hover:bg-blue-700 transition-colors"
+              >
+                {isUpdating ? "Updating..." : "Passenger Picked Up"}
+              </button>
             ) : (
-              <div className="flex gap-3">
-                <button 
-                  onClick={handleCancel}
-                  className="w-1/3 bg-gray-100 text-gray-700 py-4 rounded-xl font-bold text-lg hover:bg-gray-200 transition-colors"
-                >
-                  Cancel
-                </button>
-                <button 
-                  onClick={handleRequestRide}
-                  disabled={isRequesting || drivers.length === 0}
-                  className="w-2/3 bg-black text-white py-4 rounded-xl font-bold text-lg shadow-md hover:bg-gray-800 disabled:bg-gray-400 transition-colors"
-                >
-                  {/*Dynamic button text prevents the user from clicking when no drivers exist */}
-                  {isRequesting ? 'Processing...' : (drivers.length === 0 ? 'No Drivers Nearby' : 'Confirm')}
-                </button>
-              </div>
+              <button 
+                onClick={handleComplete} 
+                disabled={isUpdating}
+                className="w-full bg-green-500 text-white py-4 rounded-xl font-bold text-lg shadow-md hover:bg-green-600 transition-colors"
+              >
+                {isUpdating ? "Updating..." : "Complete Dropoff"}
+              </button>
             )}
+
           </div>
         </div>
       )}
