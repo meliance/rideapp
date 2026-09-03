@@ -8,6 +8,7 @@ export default function Sidebar() {
   const navigate = useNavigate();
   const location = useLocation();
 
+  // Don't render the sidebar if the user isn't logged in
   if (!authUser) return null;
 
   const handleLogout = async () => {
@@ -18,6 +19,7 @@ export default function Sidebar() {
 
   return (
     <>
+      {/* FLOATING HAMBURGER BUTTON */}
       <button 
         onClick={() => setIsOpen(true)}
         className="fixed top-4 left-4 z-[2000] bg-white p-3 rounded-full shadow-lg border border-gray-100 hover:bg-gray-50 transition-colors"
@@ -76,6 +78,16 @@ export default function Sidebar() {
             }`}
           >
             <span className="text-xl">📜</span> Trip History
+          </button>
+
+          {/* NEW: PROFILE BUTTON */}
+          <button 
+            onClick={() => { setIsOpen(false); navigate('/profile'); }}
+            className={`flex items-center gap-4 p-4 rounded-xl font-bold transition-all ${
+              location.pathname === '/profile' ? 'bg-gray-100 text-black shadow-sm' : 'text-gray-500 hover:bg-gray-50 hover:text-black'
+            }`}
+          >
+            <span className="text-xl">👤</span> Profile
           </button>
         </div>
 

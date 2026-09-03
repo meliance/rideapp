@@ -175,6 +175,17 @@ export default function DriverDashboard() {
     }
   };
 
+  const handleDecline = async () => {
+    if (!incomingRide) return;
+    try {
+      await axiosInstance.put(`/trips/${incomingRide.tripId}/respond`, { status: "CANCELLED" });
+    } catch (error) {
+      console.error("Failed to decline ride:", error);
+    } finally {
+      setIncomingRide(null);
+    }
+  };
+
   // Pick up the passenger
   const handlePickup = async () => {
     setIsUpdating(true);
@@ -294,7 +305,7 @@ export default function DriverDashboard() {
             </div>
 
             <div className="flex gap-3">
-              <button onClick={() => setIncomingRide(null)} className="w-1/3 bg-gray-100 text-gray-700 py-4 rounded-xl font-bold text-lg hover:bg-gray-200">Decline</button>
+             <button onClick={handleDecline} className="w-1/3 bg-gray-100 text-gray-700 py-4 rounded-xl font-bold text-lg hover:bg-gray-200">Decline</button>
               <button onClick={handleAccept} disabled={isAccepting} className="w-2/3 bg-green-500 text-white py-4 rounded-xl font-bold text-lg shadow-md hover:bg-green-600 disabled:bg-gray-400">
                 {isAccepting ? 'Accepting...' : 'Accept Ride'}
               </button>

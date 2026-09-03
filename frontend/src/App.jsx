@@ -9,6 +9,7 @@ import DriverDashboard from './components/DriverDashboard';
 import TripHistory from './components/TripHistory';
 import Login from './components/Login';
 import Sidebar from './components/Sidebar';
+import Profile from './components/Profile';
 
 function App() {
   const { authUser, isCheckingAuth, checkAuth } = useAuthStore();
@@ -55,6 +56,7 @@ function App() {
           path="/history" 
           element={authUser ? <TripHistory /> : <Navigate to="/login" />} 
         />
+        <Route path="/profile" element={authUser ? <Profile /> : <Navigate to="/login" />} />
         <Route 
           path="/login" 
           element={!authUser ? <Login /> : <Navigate to="/" />} 

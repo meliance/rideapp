@@ -52,5 +52,30 @@ export const useAuthStore = create((set) => ({
     } catch (error) {
       console.error("Logout failed", error);
     }
-  }
+  },
+
+  updateProfile: async (data) => {
+    set({ isUpdatingProfile: true });
+    try {
+      // 1. Ensure this URL exactly matches your backend route in auth.route.js!
+      const res = await axiosInstance.put("/auth/update-profile", data); 
+      
+      // 2. Map the nested 'user' object and fix the snake_case naming
+      set((state) => ({
+        authUser: {
+          ...state.authUser,
+          ...res.data.user,
+          profilePic: res.data.user.profile_pic // Map to what the React UI expects!
+        }
+      }));
+
+      alert("Profile updated successfully!");
+    } catch (error) {
+      console.error("Error updating profile:", error);
+      alert(error.response?.data?.message || "Failed to update profile");
+    } finally {
+      set({ isUpdatingProfile: false });
+    }
+  },
+
 }));
