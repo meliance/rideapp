@@ -2,7 +2,6 @@ import { pool } from "../lib/db.js";
 import { io } from "../lib/socket.js";
 
 export const requestTrip = async (req, res) => {
-  // 1. Check out a dedicated client for the transaction
   const client = await pool.connect();
   
   try {
@@ -13,10 +12,9 @@ export const requestTrip = async (req, res) => {
       return res.status(400).json({ message: "All trip details are required" });
     }
 
-    // 2. Start Transaction
     await client.query('BEGIN');
 
-    // 3. CONCURRENCY SHIELD: Locks row until transaction COMMIT/ROLLBACK
+    // Lock row until transaction COMMIT/ROLLBACK
     const driverCheckQuery = `
       SELECT is_available, approval_status 
       FROM driver_profiles 
@@ -26,14 +24,13 @@ export const requestTrip = async (req, res) => {
     const driver = driverCheckResult.rows[0];
 
     if (!driver || driver.approval_status !== 'APPROVED' || !driver.is_available) {
-      await client.query('ROLLBACK'); // Release lock immediately
+      await client.query('ROLLBACK');
       return res.status(410).json({ 
         success: false, 
         message: "The requested driver is no longer available. Please try matching again." 
       });
     }
 
-    // 4. Save to PostgreSQL
     const tripQuery = `
       INSERT INTO trips (
         passenger_id, driver_id, status, 
@@ -57,10 +54,9 @@ export const requestTrip = async (req, res) => {
     
     const newTrip = result.rows[0];
 
-    // 5. Commit Transaction (Releases the FOR UPDATE lock)
     await client.query('COMMIT');
 
-    // 6. Real-Time Broadcast
+    // Real-Time Broadcast
     io.to(`user_${driverId}`).emit("new_ride_request", {
       tripId: newTrip.id,
       passenger: {
@@ -85,7 +81,6 @@ export const requestTrip = async (req, res) => {
     console.error("Error in requestTrip execution layer:", error);
     res.status(500).json({ message: "Internal Server Error" });
   } finally {
-    // 7. ALWAYS release the client back to the pool
     client.release();
   }
 };
@@ -96,15 +91,14 @@ export const respondToTrip = async (req, res) => {
   try {
     const driverId = req.user.id;
     const { tripId } = req.params;
-    const { status } = req.body; 
+    const { status, finalFare } = req.body; // <-- FIX: Added finalFare to destructured body
 
-    if (!['ACCEPTED', 'CANCELLED'].includes(status)) {
-      return res.status(400).json({ message: "Invalid status. Use ACCEPTED or CANCELLED." });
+    if (!["ACCEPTED", "CANCELLED", "IN_PROGRESS", "COMPLETED"].includes(status)) {
+      return res.status(400).json({ message: "Invalid status provided." });
     }
 
     await client.query('BEGIN');
 
-    // 1. Lock the specific trip to prevent passenger-cancellation race conditions
     const tripQuery = `
       SELECT id, passenger_id, status 
       FROM trips 
@@ -119,35 +113,65 @@ export const respondToTrip = async (req, res) => {
       return res.status(404).json({ message: "Trip not found or not assigned to you." });
     }
 
-    if (trip.status !== 'REQUESTED') {
-      await client.query('ROLLBACK');
-      return res.status(400).json({ message: `Too late. Trip is already ${trip.status}.` });
+    // --- FULL LIFECYCLE STATE MACHINE ---
+    if (["ACCEPTED", "CANCELLED"].includes(status)) {
+      if (trip.status !== 'REQUESTED') {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ message: `Too late. Trip is already ${trip.status}.` });
+      }
+    }
+    
+    if (status === "IN_PROGRESS") {
+      if (trip.status !== "ACCEPTED") {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ message: "Trip must be ACCEPTED before it can be started." });
+      }
+    }
+    
+    if (status === "COMPLETED") {
+      if (trip.status !== "IN_PROGRESS") {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ message: "Trip must be IN_PROGRESS before it can be completed." });
+      }
+    }
+    
+    let updateTripQuery, queryParams;
+
+    if (status === "COMPLETED" && finalFare) {
+      updateTripQuery = `
+        UPDATE trips 
+        SET status = $1, fare_estimation = $2 
+        WHERE id = $3 
+        RETURNING id, passenger_id, driver_id, status, fare_estimation;
+      `;
+      queryParams = [status, finalFare, tripId];
+    } else {
+      updateTripQuery = `
+        UPDATE trips 
+        SET status = $1 
+        WHERE id = $2 
+        RETURNING id, passenger_id, driver_id, status;
+      `;
+      queryParams = [status, tripId];
     }
 
-    // 2. Update the trip status
-    const updateTripQuery = `
-      UPDATE trips 
-      SET status = $1 
-      WHERE id = $2 
-      RETURNING id, passenger_id, driver_id, status;
-    `;
-    const updatedTripResult = await client.query(updateTripQuery, [status, tripId]);
+    const updatedTripResult = await client.query(updateTripQuery, queryParams);
     const updatedTrip = updatedTripResult.rows[0];
 
-    // 3. If accepted, immediately pull the driver off the available market
+    // Manage Driver Availability on the Market
     if (status === 'ACCEPTED') {
-      await client.query(
-        `UPDATE driver_profiles SET is_available = false WHERE user_id = $1`,
-        [driverId]
-      );
+      await client.query(`UPDATE driver_profiles SET is_available = false WHERE user_id = $1`, [driverId]);
+    } else if (status === 'COMPLETED' || status === 'CANCELLED') {
+      await client.query(`UPDATE driver_profiles SET is_available = true WHERE user_id = $1`, [driverId]);
     }
 
     await client.query('COMMIT');
 
-    // 4. Real-Time Broadcast: Ping the passenger's private room with the decision
+    // Real-Time Broadcast to Passenger (Pass the final fare back down to them!)
     io.to(`user_${trip.passenger_id}`).emit("trip_status_updated", {
       tripId: updatedTrip.id,
       status: updatedTrip.status,
+      finalFare: finalFare || null, // Emit so the passenger app knows exactly what they paid
       driver: {
         id: driverId,
         name: req.user.name,
@@ -170,71 +194,47 @@ export const respondToTrip = async (req, res) => {
   }
 };
 
-export const updateTripLifecycle = async (req, res) => {
+// Passenger cancellation endpoint
+export const cancelTrip = async (req, res) => {
   const client = await pool.connect();
-  
   try {
-    const driverId = req.user.id;
     const { tripId } = req.params;
-    const { status } = req.body; 
-
-    const validStatuses = ['ARRIVED', 'IN_PROGRESS', 'COMPLETED'];
-    if (!validStatuses.includes(status)) {
-      return res.status(400).json({ message: "Invalid status. Use ARRIVED, IN_PROGRESS, or COMPLETED." });
-    }
-
+    
     await client.query('BEGIN');
 
-    // 1. Lock and verify the trip belongs to this driver
-    const tripQuery = `
-      SELECT id, passenger_id, status 
-      FROM trips 
-      WHERE id = $1 AND driver_id = $2 
-      FOR UPDATE;
-    `;
-    const tripResult = await client.query(tripQuery, [tripId, driverId]);
-    const trip = tripResult.rows[0];
+    const tripRes = await client.query('SELECT * FROM trips WHERE id = $1 FOR UPDATE', [tripId]);
+    const trip = tripRes.rows[0];
 
-    if (!trip) {
+    if (!trip || trip.passenger_id !== req.user.id) {
       await client.query('ROLLBACK');
-      return res.status(404).json({ message: "Trip not found or not assigned to you." });
+      return res.status(403).json({ message: "Unauthorized or trip not found." });
     }
 
-    // 2. Update the status
-    const updateTripQuery = `
-      UPDATE trips 
-      SET status = $1 
-      WHERE id = $2 
-      RETURNING id, passenger_id, status;
-    `;
-    const updatedTripResult = await client.query(updateTripQuery, [status, tripId]);
-    const updatedTrip = updatedTripResult.rows[0];
+    // FIX: Lock down the cancellation logic! Passengers can only cancel before pickup.
+    if (trip.status !== 'REQUESTED' && trip.status !== 'ACCEPTED') {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ message: `Cannot cancel trip at this stage (${trip.status}).` });
+    }
 
-    // 3. If COMPLETED, free up the driver to take new rides
-    if (status === 'COMPLETED') {
-      await client.query(
-        `UPDATE driver_profiles SET is_available = true WHERE user_id = $1`,
-        [driverId]
-      );
+    // Mark cancelled and release the driver back to the market
+    await client.query('UPDATE trips SET status = $1 WHERE id = $2', ['CANCELLED', tripId]);
+    if (trip.driver_id) {
+      await client.query('UPDATE driver_profiles SET is_available = true WHERE user_id = $1', [trip.driver_id]);
     }
 
     await client.query('COMMIT');
 
-    // 4. Real-Time Broadcast: Update the passenger's UI instantly
-    io.to(`user_${trip.passenger_id}`).emit("trip_status_updated", {
-      tripId: updatedTrip.id,
-      status: updatedTrip.status
-    });
+    // Instantly alert the driver via Socket.io
+    if (trip.driver_id) {
+      io.to(`user_${trip.driver_id}`).emit("trip_cancelled", { 
+        message: "The passenger cancelled the trip." 
+      });
+    }
 
-    res.status(200).json({
-      success: true,
-      message: `Trip marked as ${status}`,
-      trip: updatedTrip
-    });
-
+    res.status(200).json({ success: true, message: "Trip cancelled successfully." });
   } catch (error) {
     await client.query('ROLLBACK');
-    console.error("Error in updateTripLifecycle:", error);
+    console.error("Error cancelling trip:", error);
     res.status(500).json({ message: "Internal Server Error" });
   } finally {
     client.release();
@@ -259,15 +259,13 @@ export const getTripHistory = async (req, res) => {
           u.name AS driver_name, u.phone_number AS driver_phone, u.profile_pic AS driver_pic,
           dp.vehicle_make, dp.vehicle_model, dp.license_plate
         FROM trips t
-        -- LEFT JOIN ensures we still get the trip even if a driver deleted their account
         LEFT JOIN users u ON t.driver_id = u.id 
         LEFT JOIN driver_profiles dp ON t.driver_id = dp.user_id
-        WHERE t.passenger_id = $1
+        WHERE t.passenger_id = $1 AND t.status IN ('COMPLETED', 'CANCELLED')
         ORDER BY t.created_at DESC
-        LIMIT 50; -- Prevent massive payloads
+        LIMIT 50; 
       `;
     } else if (role === "driver") {
-      // 2. Driver Query: Get passenger details
       query = `
         SELECT 
           t.id AS trip_id, t.status, t.fare_estimation, t.created_at,
@@ -278,7 +276,7 @@ export const getTripHistory = async (req, res) => {
           u.name AS passenger_name, u.phone_number AS passenger_phone, u.profile_pic AS passenger_pic
         FROM trips t
         JOIN users u ON t.passenger_id = u.id
-        WHERE t.driver_id = $1
+        WHERE t.driver_id = $1 AND t.status IN ('COMPLETED', 'CANCELLED')
         ORDER BY t.created_at DESC
         LIMIT 50;
       `;

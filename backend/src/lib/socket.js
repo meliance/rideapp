@@ -69,8 +69,9 @@ io.on("connection", async (socket) => {
   }
 
   socket.on("update_location", async (coords) => {
-    const { latitude, longitude, bearing } = coords;
-    
+    // 1. Extract passengerId from the incoming payload
+    const { latitude, longitude, bearing, passengerId } = coords;
+
     if (socket.activeRole !== "driver") return;
 
     try {
@@ -79,14 +80,19 @@ io.on("connection", async (socket) => {
         SET location = ST_SetSRID(ST_MakePoint($1, $2), 4326),
             bearing = $3,
             updated_at = CURRENT_TIMESTAMP
-        WHERE user_id = $4 AND is_available = true
+        WHERE user_id = $4
       `;
       await pool.query(spatialQuery, [longitude, latitude, bearing || 0, userId]);
+      
+      // 2. NEW: Forward the coordinates directly to the passenger!
+      if (passengerId) {
+        io.to(`user_${passengerId}`).emit("driver_location_update", { latitude, longitude });
+      }
       
     } catch (err) {
       console.error(`Failed to update coordinates for driver ${userId}:`, err);
     }
-  });
+    });
 
   socket.on("disconnect", async () => {
     console.log(`User ${userId} disconnected from socket ${socket.id}`);

@@ -14,10 +14,11 @@ const router = express.Router();
 router.post("/signup", signup);
 router.post("/driver/signup", driverSignup);
 router.post("/login", login);
-router.post("/update-profile-pic", protectRoute, updateProfilePic);
-router.put("/update-profile-pic", protectRoute, updateProfilePic);
-router.post("/logout", logout);
 
+// FIX: Changed from /update-profile-pic to /update-profile to match the frontend!
+router.put("/update-profile", protectRoute, updateProfilePic);
+
+router.post("/logout", logout);
 router.get("/check", protectRoute, checkAuth);
 
 export default router;
