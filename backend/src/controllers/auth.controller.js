@@ -166,6 +166,8 @@ export const login = async (req, res) => {
     const activeRole = isApprovedDriver ? "driver" : "rider";
 
     generateToken(account.id, activeRole, res);
+    
+    const calculatedRole = roles.includes("driver") ? "driver" : "rider";
 
     res.status(200).json({
       id: account.id,
@@ -173,7 +175,7 @@ export const login = async (req, res) => {
       phoneNumber: account.phone_number,
       profilePic: account.profile_pic,
       roles: roles,
-      activeRole: activeRole,
+      activeRole: calculatedRole,
       driverStatus: account.approval_status 
     });
 
@@ -223,8 +225,6 @@ export const upgradeToDriver = async (req, res) => {
     const result = await pool.query(insertQuery, [userId, vehicleMake, vehicleModel, licensePlate]);
     const driverProfile = result.rows[0];
 
-    // 3. Update their session token to reflect the role expansion if needed, 
-    // but keep activeRole as "rider" since their driver status is still PENDING.
     generateToken(userId, "rider", res);
 
     res.status(200).json({
@@ -236,7 +236,7 @@ export const upgradeToDriver = async (req, res) => {
       },
       status: driverProfile.approval_status,
       roles: ["rider", "driver"],
-      activeRole: "rider" // Must remain rider until admin changes status to APPROVED
+      activeRole: "rider"
     });
 
   } catch (error) {
@@ -250,9 +250,45 @@ export const upgradeToDriver = async (req, res) => {
   }
 };
 
-export const checkAuth = (req, res) => {
+export const checkAuth = async (req, res) => {
   try {
-    res.status(200).json(req.user);
+    // 1. Fetch the user and their driver status just like we do in login
+    const query = `
+      SELECT u.id, u.name, u.phone_number, u.profile_pic,
+             dp.approval_status
+      FROM users u
+      LEFT JOIN driver_profiles dp ON u.id = dp.user_id
+      WHERE u.id = $1
+    `;
+    
+    const result = await pool.query(query, [req.user.id]);
+    const account = result.rows[0];
+
+    if (!account) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    // 2. Rebuild the roles array
+    const roles = ["rider"];
+    const isDriver = account.approval_status !== null;
+    
+    if (isDriver) {
+      roles.push("driver");
+    }
+
+    // 3. Dynamically set the active role
+    const calculatedRole = roles.includes("driver") ? "driver" : "rider";
+
+    // 4. Send the exact same payload structure as the login route
+    res.status(200).json({
+      id: account.id,
+      name: account.name,
+      phoneNumber: account.phone_number,
+      profilePic: account.profile_pic,
+      roles: roles,
+      activeRole: calculatedRole,
+      driverStatus: account.approval_status 
+    });
   } catch (error) {
     console.error("Error in checkAuth:", error);
     res.status(500).json({ message: "Internal Server Error" });

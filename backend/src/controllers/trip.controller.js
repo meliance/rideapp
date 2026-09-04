@@ -167,15 +167,40 @@ export const respondToTrip = async (req, res) => {
 
     await client.query('COMMIT');
 
-    // Real-Time Broadcast to Passenger (Pass the final fare back down to them!)
+    // 1. Fetch the driver's vehicle and contact details
+    // 1. Fetch the driver's vehicle and contact details SAFELY
+    let phone = "No Phone";
+    let carModel = "Standard Car";
+    let plateNumber = "N/A";
+
+    try {
+      // Do a safe SELECT * so we don't crash on exact column names
+      const userRes = await client.query(`SELECT * FROM users WHERE id = $1`, [driverId]);
+      const dpRes = await client.query(`SELECT * FROM driver_profiles WHERE user_id = $1`, [driverId]);
+      
+      const userRow = userRes.rows[0] || {};
+      const dpRow = dpRes.rows[0] || {};
+
+      // Safely check all common naming conventions you might have used!
+      phone = userRow.phone_number || userRow.phone || userRow.contact || "No Phone";
+      carModel = dpRow.car_model || dpRow.carmodel || dpRow.vehicle_model || dpRow.vehicle || "Standard Car";
+      plateNumber = dpRow.plate_number || dpRow.platenumber || dpRow.license_plate || "N/A";
+    } catch (err) {
+      console.warn("Could not fetch extra driver details, using defaults. Error:", err.message);
+    }
+
+    // 2. Real-Time Broadcast to Passenger
     io.to(`user_${trip.passenger_id}`).emit("trip_status_updated", {
       tripId: updatedTrip.id,
       status: updatedTrip.status,
-      finalFare: finalFare || null, // Emit so the passenger app knows exactly what they paid
+      finalFare: finalFare || null,
       driver: {
         id: driverId,
         name: req.user.name,
-        profilePic: req.user.profilePic
+        profilePic: req.user.profilePic,
+        phone: phone,
+        carModel: carModel,
+        plateNumber: plateNumber
       }
     });
 
