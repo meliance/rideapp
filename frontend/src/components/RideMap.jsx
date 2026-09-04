@@ -25,33 +25,30 @@ const destinationIcon = new L.Icon({
 });
 
 export default function RideMap() {
-  const { socket } = useSocketStore(); // Extract socket
+  const { socket } = useSocketStore();
 
   const [drivers, setDrivers] = useState([]);
   const [isRequesting, setIsRequesting] = useState(false);
   const [requestStatus, setRequestStatus] = useState('');
   
-  // Search and Destination states
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState([]);
   const [destination, setDestination] = useState(null);
   const [estimatedFee, setEstimatedFee] = useState(0);
   
-  // State for the moving driver & active trip
   const [liveDriverLocation, setLiveDriverLocation] = useState(null);
   const [currentTripId, setCurrentTripId] = useState(null); 
   const [tripStatus, setTripStatus] = useState(null); 
 
-  const [position, setPosition] = useState(null);
+  // <-- NEW: State to hold the driver's details! -->
+  const [assignedDriver, setAssignedDriver] = useState(null);
 
-  // <-- ADDED: State for the blue route line -->
+  const [position, setPosition] = useState(null);
   const [routePath, setRoutePath] = useState([]);
 
-  // <-- FIX: Track driver location securely without breaking React renders -->
   const finalDriverLocation = useRef(null);
   const searchTimeoutRef = useRef(null);
 
-  // Fetch real GPS location when the app loads
   useEffect(() => {
     if (navigator.geolocation) {
       navigator.geolocation.getCurrentPosition(
@@ -67,7 +64,6 @@ export default function RideMap() {
     }
   }, []);
 
-  // Poll for nearby drivers
   const fetchNearbyDrivers = async () => {
     if (liveDriverLocation || !position) return; 
 
@@ -86,32 +82,51 @@ export default function RideMap() {
     return () => clearInterval(interval); 
   }, [liveDriverLocation, position]); 
 
-  // Listen for live driver movement AND status updates
+  // Auto-timeout if driver ignores the request for 60 seconds
+  useEffect(() => {
+    let timeout;
+    if (tripStatus === 'REQUESTED' && currentTripId) {
+      timeout = setTimeout(async () => {
+        try {
+          await axiosInstance.put(`/trips/${currentTripId}/cancel`);
+        } catch (error) {
+          console.error("Auto-cancel failed on backend", error);
+        }
+        
+        setRequestStatus("No drivers responded in time.");
+        setIsRequesting(false);
+        setCurrentTripId(null);
+        setTripStatus(null);
+      }, 60000); 
+    }
+
+    return () => clearTimeout(timeout);
+  }, [tripStatus, currentTripId]);
+
   useEffect(() => {
     if (!socket) return;
 
     const handleDriverMove = (coords) => {
       setLiveDriverLocation([coords.latitude, coords.longitude]);
-      // Update the invisible tracker so we have it for final calculation!
       finalDriverLocation.current = [coords.latitude, coords.longitude];
     };
 
     const handleStatusUpdate = (data) => {
       setTripStatus(data.status);
-      setRoutePath([]); // Clear old line on status change
+      setRoutePath([]); 
 
       if (data.status === "ACCEPTED") {
         setRequestStatus("Driver accepted! They are on the way.");
+        if (data.driver) setAssignedDriver(data.driver);
       } 
       else if (data.status === "IN_PROGRESS") {
         setRequestStatus("You are in the car. Enjoy the ride!");
+        if (data.driver) setAssignedDriver(data.driver);
       } 
-      else if (data.status === "COMPLETED" || data.status === "CANCELLED") {
-        
+      else if (data.status === "COMPLETED") {
         setTimeout(() => {
-          // Alert uses the FINAL FARE explicitly provided by the backend!
-          const paidAmount = data.finalFare || estimatedFee; // Fallback to estimated just in case
-          alert(data.status === "COMPLETED" ? `You have arrived! Trip Complete with total fee: ${paidAmount} ETB` : "Trip was cancelled.");
+          const paidAmount = data.finalFare || estimatedFee; 
+          alert(`You have arrived! Trip Complete with total fee: ${paidAmount} ETB`);
           
           setLiveDriverLocation(null);
           setDestination(null);
@@ -120,8 +135,16 @@ export default function RideMap() {
           setIsRequesting(false);
           setCurrentTripId(null);
           setTripStatus(null); 
-          setRoutePath([]); // Clear the line at the end
+          setRoutePath([]); 
+          setAssignedDriver(null); // <-- Clear driver details
         }, 100);
+      }
+      else if (data.status === "CANCELLED") {
+        setRequestStatus('Your request is not accepted.');
+        setIsRequesting(false);
+        setCurrentTripId(null);
+        setTripStatus(null);
+        setAssignedDriver(null);
       }
     };
 
@@ -134,7 +157,6 @@ export default function RideMap() {
     };
   }, [socket, estimatedFee, position]);
 
-  // <-- FIX: The Super-OSRM Effect (Previews the route AND calculates REAL road fees) -->
   useEffect(() => {
     if (!position) return;
     
@@ -142,15 +164,12 @@ export default function RideMap() {
       try {
         let start, end;
         
-        // Case 1: Preview Route (Destination selected, but ride not requested/accepted yet)
         if (!tripStatus && destination) {
           start = position; end = [destination.lat, destination.lng];
         } 
-        // Case 2: Driver driving to pickup passenger
         else if (tripStatus === 'ACCEPTED' && liveDriverLocation) {
           start = liveDriverLocation; end = position; 
         } 
-        // Case 3: Passenger driving to destination
         else if (tripStatus === 'IN_PROGRESS' && destination) {
           start = position; end = [destination.lat, destination.lng]; 
         } else {
@@ -162,11 +181,9 @@ export default function RideMap() {
         const data = await res.json();
         
         if (data.routes && data.routes.length > 0) {
-          // Draw the blue line
           const path = data.routes[0].geometry.coordinates.map(c => [c[1], c[0]]);
           setRoutePath(path);
 
-          // If it's the preview phase, use the REAL road distance to set the estimated fee!
           if (!tripStatus) {
              const roadDistanceInMeters = data.routes[0].distance;
              setEstimatedFee(Math.round(100 + (roadDistanceInMeters / 1000) * 25));
@@ -180,31 +197,34 @@ export default function RideMap() {
     getRouteAndFee();
   }, [tripStatus, liveDriverLocation, position, destination]);
 
-  // Search OpenStreetMap for places
   const handleSearch = async (e) => {
     const query = e.target.value;
     setSearchQuery(query);
+
+    if (searchTimeoutRef.current) {
+      clearTimeout(searchTimeoutRef.current);
+    }
     
     if (query.length < 3) {
       setSearchResults([]);
       return;
     }
 
-    try {
-      const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&limit=5&countrycodes=et&email=developer@rideapp.com`;
-      
-      const res = await fetch(url);
-      
-      if (!res.ok) throw new Error("API rejected the request");
-      
-      const data = await res.json();
-      setSearchResults(data);
-    } catch (error) {
-      console.error("Search failed:", error);
-    }
+    searchTimeoutRef.current = setTimeout(async () => {
+      try {
+        const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&limit=5&countrycodes=et&email=developer@rideapp.com`;
+        const res = await fetch(url);
+        
+        if (!res.ok) throw new Error("API rejected the request");
+        
+        const data = await res.json();
+        setSearchResults(data);
+      } catch (error) {
+        console.error("Search failed:", error);
+      }
+    }, 500);
   };
 
-  // Select a place (Calculation moved into the Super-OSRM useEffect above!)
   const handleSelectPlace = (place) => {
     const lat = parseFloat(place.lat);
     const lng = parseFloat(place.lon);
@@ -215,7 +235,6 @@ export default function RideMap() {
     setSearchResults([]);
   };
 
-  // Request the ride
   const handleRequestRide = async () => {
     if (!destination) return;
     
@@ -247,12 +266,10 @@ export default function RideMap() {
       
     } catch (error) {
       setRequestStatus(error.response?.data?.message || 'Failed to request ride');
-    } finally {
       setIsRequesting(false);
-    }
+    } 
   };
 
-  // Cancel the ride and alert the backend
   const handleCancel = async () => {
     if (currentTripId) {
       try {
@@ -262,7 +279,6 @@ export default function RideMap() {
       }
     }
     
-    // Clear local state
     setDestination(null);
     setSearchQuery('');
     setRequestStatus('');
@@ -270,10 +286,10 @@ export default function RideMap() {
     setLiveDriverLocation(null); 
     setCurrentTripId(null);
     setTripStatus(null);
-    setRoutePath([]); // Clear the line
+    setRoutePath([]);
+    setAssignedDriver(null); // <-- Clear driver details
   };
 
-  // Render a loading screen while waiting for GPS!
   if (!position) {
     return (
       <div className="flex h-screen w-screen items-center justify-center bg-gray-50 flex-col">
@@ -283,6 +299,8 @@ export default function RideMap() {
       </div>
     );
   }
+
+  const isErrorStatus = requestStatus === 'No drivers available nearby.' || requestStatus === 'Your request is not accepted.' || requestStatus === 'No drivers responded in time.';
 
   return (
     <div style={{ height: "100vh", width: "100vw", position: "relative", zIndex: 0 }}>
@@ -320,22 +338,18 @@ export default function RideMap() {
       <MapContainer center={position} zoom={14} style={{ height: "100%", width: "100%", zIndex: 10 }}>
         <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
         
-        {/* <-- ADDED: Draw the Blue Route! --> */}
         {routePath.length > 0 && <Polyline positions={routePath} color="#3b82f6" weight={6} opacity={0.8} />}
 
-        {/* Passenger Marker */}
         <Marker position={position}>
           <Popup>Your Pickup Location</Popup>
         </Marker>
 
-        {/* Destination Marker */}
         {destination && (
           <Marker position={[destination.lat, destination.lng]} icon={destinationIcon}>
             <Popup>{destination.name}</Popup>
           </Marker>
         )}
 
-        {/* Render EITHER the moving driver OR the idle drivers */}
         {liveDriverLocation ? (
           <Marker position={liveDriverLocation} icon={carIcon}>
             <Popup>Your Driver is Arriving!</Popup>
@@ -359,18 +373,63 @@ export default function RideMap() {
             </div>
 
             {requestStatus ? (
-              <div className="text-center p-4 bg-gray-50 rounded-xl border border-gray-100">
+              <div className="text-center p-4 bg-gray-50 rounded-xl border border-gray-100 flex flex-col items-center">
                 
-                <p className={`font-medium mb-3 ${requestStatus === 'No drivers available nearby.' ? 'text-red-500 font-bold' : 'text-gray-900'}`}>
+                {tripStatus === 'REQUESTED' && !isErrorStatus && (
+                  <div className="h-8 w-8 animate-spin rounded-full border-b-4 border-black mb-3 mx-auto"></div>
+                )}
+                
+                {/* <-- NEW: Driver Profile Card (Replaces the bouncy car emoji) --> */}
+                {(tripStatus === 'ACCEPTED' || tripStatus === 'IN_PROGRESS') && assignedDriver ? (
+                  <div className="w-full bg-white rounded-xl p-4 mb-4 border border-gray-100 flex items-center justify-between text-left shadow-sm">
+                    <div className="flex items-center gap-3">
+                      {assignedDriver.profilePic ? (
+                        <img src={assignedDriver.profilePic} alt="Driver" className="w-12 h-12 rounded-full object-cover" />
+                      ) : (
+                        <div className="w-12 h-12 rounded-full bg-gray-200 flex items-center justify-center">
+                          <span className="text-gray-500 font-bold text-lg">D</span>
+                        </div>
+                      )}
+                      <div>
+                        <p className="font-bold text-gray-900">{assignedDriver.name || "Your Driver"}</p>
+                        <p className="text-xs text-gray-500 font-medium">
+                          {assignedDriver.carModel || "Standard Car"} • {assignedDriver.plateNumber || "N/A"}
+                        </p>
+                      </div>
+                    </div>
+                    {assignedDriver.phone && (
+                      <a 
+                        href={`tel:${assignedDriver.phone}`} 
+                        className="bg-green-100 text-green-700 w-10 h-10 rounded-full flex items-center justify-center hover:bg-green-200 transition-colors"
+                        title="Call Driver"
+                      >
+                        📞
+                      </a>
+                    )}
+                  </div>
+                ) : (
+                  <>
+                    {tripStatus === 'ACCEPTED' && <div className="text-4xl mb-3 animate-bounce">🚘</div>}
+                    {tripStatus === 'IN_PROGRESS' && <div className="text-4xl mb-3">🎉</div>}
+                  </>
+                )}
+
+                <p className={`font-medium mb-3 ${isErrorStatus ? 'text-red-500 font-bold' : 'text-gray-900'}`}>
                   {requestStatus}
                 </p>
                 
                 {tripStatus !== 'IN_PROGRESS' && (
                   <button 
-                    onClick={handleCancel}
-                    className="text-red-500 text-sm font-bold hover:text-red-700 transition-colors mt-2"
+                    onClick={() => {
+                      if (isErrorStatus) {
+                        setRequestStatus(''); 
+                      } else {
+                        handleCancel();
+                      }
+                    }}
+                    className={`${isErrorStatus ? 'text-gray-500 hover:text-gray-700' : 'text-red-500 hover:text-red-700'} text-sm font-bold transition-colors mt-2`}
                   >
-                    Cancel Request
+                    {isErrorStatus ? 'Try Again' : 'Cancel Request'}
                   </button>
                 )}
                 

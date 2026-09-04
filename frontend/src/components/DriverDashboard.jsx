@@ -334,7 +334,7 @@ export default function DriverDashboard() {
       {/* INCOMING RIDE OVERLAY */}
       {incomingRide && (
         <div className="absolute bottom-0 left-0 w-full p-4 z-[1000]">
-          <div className="max-w-md mx-auto bg-white rounded-2xl shadow-2xl overflow-hidden border-2 border-black p-6 animate-bounce">
+          <div className="max-w-md mx-auto bg-white rounded-2xl shadow-2xl overflow-hidden border-2 border-black p-6">
             <div className="flex justify-between items-center border-b border-gray-100 pb-4 mb-4">
               <div className="flex items-center gap-3">
                 {incomingRide.passenger?.profilePic ? (
