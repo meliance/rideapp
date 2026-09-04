@@ -250,13 +250,26 @@ export default function DriverDashboard() {
     }
   };
 
-  // Complete the trip
+  // FIX: Real Road Distance + Passing Final Fare to Backend!
   const handleComplete = async () => {
     setIsUpdating(true);
     try {
-      await axiosInstance.put(`/trips/${activeTrip.tripId}/respond`, { status: "COMPLETED" });
-      alert("Trip completed successfully! Earned " + activeTrip.fare + " ETB");
+      // 1. Fetch exact road distance driven from original pickup to current stopping point
+      const url = `https://router.project-osrm.org/route/v1/driving/${activeTrip.pickup.lng},${activeTrip.pickup.lat};${currentLocation[1]},${currentLocation[0]}?overview=false`;
+      const res = await fetch(url);
+      const data = await res.json();
+      const realDistanceInMeters = data.routes[0].distance;
       
+      // 2. Calculate True Fare
+      const actualFare = Math.round(100 + (realDistanceInMeters / 1000) * 25);
+
+      // 3. Send final fare to backend to update passenger and history!
+      await axiosInstance.put(`/trips/${activeTrip.tripId}/respond`, { 
+        status: "COMPLETED",
+        finalFare: actualFare 
+      });
+      
+      alert(`Trip completed! Passenger paid: ${actualFare} ETB`);
       setActiveTrip(null);
       setTripStatus("EN_ROUTE");
       setRoutePath([]);
@@ -360,7 +373,6 @@ export default function DriverDashboard() {
             </div>
 
             <div className="flex gap-3">
-              {/* FIX: Now securely hits the backend using handleDecline */}
               <button onClick={handleDecline} className="w-1/3 bg-gray-100 text-gray-700 py-4 rounded-xl font-bold text-lg hover:bg-gray-200">Decline</button>
               <button onClick={handleAccept} disabled={isAccepting} className="w-2/3 bg-green-500 text-white py-4 rounded-xl font-bold text-lg shadow-md hover:bg-green-600 disabled:bg-gray-400">
                 {isAccepting ? 'Accepting...' : 'Accept Ride'}
@@ -384,7 +396,7 @@ export default function DriverDashboard() {
             
             <div className="flex justify-between items-center border-t border-gray-700 pt-4 mb-4">
               <span>{activeTrip.passenger?.name}</span>
-              <span className="font-bold">{activeTrip.fare} ETB</span>
+              <span className="font-bold text-gray-400 text-sm">Dynamic Fare</span>
             </div>
 
             {tripStatus === "EN_ROUTE" ? (

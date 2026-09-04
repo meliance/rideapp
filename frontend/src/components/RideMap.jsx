@@ -1,5 +1,5 @@
-import { useState, useEffect } from 'react';
-import { MapContainer, TileLayer, Marker, Popup, Polyline } from 'react-leaflet'; // <-- ADDED Polyline
+import { useState, useEffect, useRef } from 'react';
+import { MapContainer, TileLayer, Marker, Popup, Polyline } from 'react-leaflet';
 import 'leaflet/dist/leaflet.css';
 import L from 'leaflet';
 import { axiosInstance } from '../lib/axios';
@@ -25,7 +25,7 @@ const destinationIcon = new L.Icon({
 });
 
 export default function RideMap() {
-  const { socket } = useSocketStore();
+  const { socket } = useSocketStore(); // Extract socket
 
   const [drivers, setDrivers] = useState([]);
   const [isRequesting, setIsRequesting] = useState(false);
@@ -46,6 +46,10 @@ export default function RideMap() {
 
   // <-- ADDED: State for the blue route line -->
   const [routePath, setRoutePath] = useState([]);
+
+  // <-- FIX: Track driver location securely without breaking React renders -->
+  const finalDriverLocation = useRef(null);
+  const searchTimeoutRef = useRef(null);
 
   // Fetch real GPS location when the app loads
   useEffect(() => {
@@ -88,6 +92,8 @@ export default function RideMap() {
 
     const handleDriverMove = (coords) => {
       setLiveDriverLocation([coords.latitude, coords.longitude]);
+      // Update the invisible tracker so we have it for final calculation!
+      finalDriverLocation.current = [coords.latitude, coords.longitude];
     };
 
     const handleStatusUpdate = (data) => {
@@ -103,7 +109,9 @@ export default function RideMap() {
       else if (data.status === "COMPLETED" || data.status === "CANCELLED") {
         
         setTimeout(() => {
-          alert(data.status === "COMPLETED" ? `You have arrived! Trip Complete with total fee: ${estimatedFee} ETB` : "Trip was cancelled.");
+          // Alert uses the FINAL FARE explicitly provided by the backend!
+          const paidAmount = data.finalFare || estimatedFee; // Fallback to estimated just in case
+          alert(data.status === "COMPLETED" ? `You have arrived! Trip Complete with total fee: ${paidAmount} ETB` : "Trip was cancelled.");
           
           setLiveDriverLocation(null);
           setDestination(null);
@@ -124,22 +132,27 @@ export default function RideMap() {
       socket.off("driver_location_update", handleDriverMove);
       socket.off("trip_status_updated", handleStatusUpdate);
     };
-  }, [socket, estimatedFee]);
+  }, [socket, estimatedFee, position]);
 
-  // <-- ADDED: Fetch the blue route line from OSRM -->
+  // <-- FIX: The Super-OSRM Effect (Previews the route AND calculates REAL road fees) -->
   useEffect(() => {
-    if (!tripStatus || !position || routePath.length > 0) return;
-
-    const getRoute = async () => {
+    if (!position) return;
+    
+    const getRouteAndFee = async () => {
       try {
         let start, end;
-        if (tripStatus === 'ACCEPTED') {
-          if (!liveDriverLocation) return; 
-          start = liveDriverLocation;
-          end = position; // Driver driving to passenger
-        } else if (tripStatus === 'IN_PROGRESS') {
-          start = position; 
-          end = [destination.lat, destination.lng]; // Passenger driving to destination
+        
+        // Case 1: Preview Route (Destination selected, but ride not requested/accepted yet)
+        if (!tripStatus && destination) {
+          start = position; end = [destination.lat, destination.lng];
+        } 
+        // Case 2: Driver driving to pickup passenger
+        else if (tripStatus === 'ACCEPTED' && liveDriverLocation) {
+          start = liveDriverLocation; end = position; 
+        } 
+        // Case 3: Passenger driving to destination
+        else if (tripStatus === 'IN_PROGRESS' && destination) {
+          start = position; end = [destination.lat, destination.lng]; 
         } else {
           return;
         }
@@ -147,17 +160,25 @@ export default function RideMap() {
         const url = `https://router.project-osrm.org/route/v1/driving/${start[1]},${start[0]};${end[1]},${end[0]}?overview=full&geometries=geojson`;
         const res = await fetch(url);
         const data = await res.json();
+        
         if (data.routes && data.routes.length > 0) {
+          // Draw the blue line
           const path = data.routes[0].geometry.coordinates.map(c => [c[1], c[0]]);
           setRoutePath(path);
+
+          // If it's the preview phase, use the REAL road distance to set the estimated fee!
+          if (!tripStatus) {
+             const roadDistanceInMeters = data.routes[0].distance;
+             setEstimatedFee(Math.round(100 + (roadDistanceInMeters / 1000) * 25));
+          }
         }
       } catch (error) {
         console.error("Routing error", error);
       }
     };
 
-    getRoute();
-  }, [tripStatus, liveDriverLocation, position, destination, routePath.length]);
+    getRouteAndFee();
+  }, [tripStatus, liveDriverLocation, position, destination]);
 
   // Search OpenStreetMap for places
   const handleSearch = async (e) => {
@@ -183,20 +204,7 @@ export default function RideMap() {
     }
   };
 
-  // Calculate real distance
-  const calculateFee = (lat, lng) => {
-    const start = L.latLng(position[0], position[1]);
-    const end = L.latLng(lat, lng);
-    const distanceInMeters = start.distanceTo(end);
-    
-    const baseFare = 100;
-    const perKmRate = 25;
-    const totalFee = baseFare + (distanceInMeters / 1000) * perKmRate;
-    
-    setEstimatedFee(Math.round(totalFee));
-  };
-
-  // Select a place
+  // Select a place (Calculation moved into the Super-OSRM useEffect above!)
   const handleSelectPlace = (place) => {
     const lat = parseFloat(place.lat);
     const lng = parseFloat(place.lon);
@@ -205,7 +213,6 @@ export default function RideMap() {
     setDestination({ name: placeName, lat, lng });
     setSearchQuery(placeName);
     setSearchResults([]);
-    calculateFee(lat, lng);
   };
 
   // Request the ride
