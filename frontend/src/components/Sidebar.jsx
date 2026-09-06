@@ -1,14 +1,47 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useAuthStore } from '../store/useAuthStore';
+import { axiosInstance } from '../lib/axios';
+import { useSocketStore } from '../store/useSocketStore';
 
 export default function Sidebar() {
   const [isOpen, setIsOpen] = useState(false);
   const { authUser, logout } = useAuthStore();
   const navigate = useNavigate();
   const location = useLocation();
+  
+  // Hooks must be called before any early returns!
+  const [totalEarnings, setTotalEarnings] = useState(0);
+  const [totalTrips, setTotalTrips] = useState(0);
+  const { socket } = useSocketStore();
 
-  // Don't render the sidebar if the user isn't logged in
+  useEffect(() => {
+    if (authUser?.activeRole !== 'driver') return;
+
+    const fetchEarnings = async () => {
+      try {
+        const res = await axiosInstance.get('/trips/earnings');
+        setTotalEarnings(res.data.earnings);
+        setTotalTrips(res.data.trips);
+      } catch (error) {
+        console.error("Failed to fetch earnings", error);
+      }
+    };
+
+    fetchEarnings();
+
+    const handleTripUpdate = (data) => {
+      if (data.status === 'COMPLETED') fetchEarnings();
+    };
+
+    if (socket) socket.on("trip_status_updated", handleTripUpdate);
+
+    return () => {
+      if (socket) socket.off("trip_status_updated", handleTripUpdate);
+    };
+  }, [authUser, socket]);
+
+  // Early return comes AFTER all hooks
   if (!authUser) return null;
 
   const handleLogout = async () => {
@@ -29,7 +62,7 @@ export default function Sidebar() {
         </svg>
       </button>
 
-      {/* DARK BACKDROP (Closes menu when clicked) */}
+      {/* DARK BACKDROP */}
       {isOpen && (
         <div 
           className="fixed inset-0 bg-black bg-opacity-50 z-[2500] transition-opacity"
@@ -55,13 +88,30 @@ export default function Sidebar() {
             )}
             <div>
               <h2 className="font-bold text-lg truncate w-36">{authUser.name}</h2>
-              <p className="text-green-400 text-sm font-medium capitalize">{authUser.activeRole || authUser.role}</p>
+              {/* FIX: Dynamically show 'Admin' if they are an admin! */}
+              <p className="text-green-400 text-sm font-medium capitalize">
+                {authUser.isAdmin ? 'Admin / ' : ''}{authUser.activeRole || authUser.role}
+              </p>
             </div>
           </div>
         </div>
 
+        {/* Earnings Widget UI */}
+        {authUser?.activeRole === 'driver' && (
+          <div className="mt-6 mx-4 bg-[#1a1a1a] rounded-xl p-4 border border-gray-800 shadow-inner">
+            <div className="flex justify-between items-center mb-1">
+              <span className="text-xs text-gray-500 font-bold uppercase tracking-wider">Total Earned</span>
+              <span className="text-xs text-gray-500 font-bold uppercase tracking-wider">Trips</span>
+            </div>
+            <div className="flex justify-between items-end">
+              <span className="font-black text-lg text-green-400">{totalEarnings || 0} ETB</span>
+              <span className="font-bold text-md text-white">{totalTrips || 0}</span>
+            </div>
+          </div>
+        )}
+
         {/* Navigation Links */}
-        <div className="flex flex-col p-4 space-y-2 mt-6">
+        <div className="flex flex-col p-4 space-y-2 mt-2">
           <button 
             onClick={() => { setIsOpen(false); navigate('/'); }}
             className={`flex items-center gap-4 p-4 rounded-xl font-bold transition-all ${
@@ -80,7 +130,6 @@ export default function Sidebar() {
             <span className="text-xl">📜</span> Trip History
           </button>
 
-          {/* NEW: PROFILE BUTTON */}
           <button 
             onClick={() => { setIsOpen(false); navigate('/profile'); }}
             className={`flex items-center gap-4 p-4 rounded-xl font-bold transition-all ${
@@ -89,9 +138,40 @@ export default function Sidebar() {
           >
             <span className="text-xl">👤</span> Profile
           </button>
+
+          {/* UPGRADE TO DRIVER BUTTON (Only visible to Riders) */}
+      {authUser?.activeRole === 'rider' && authUser?.driverStatus === null && (
+        <button 
+          onClick={() => { setIsOpen(false); navigate('/upgrade'); }}
+          className={`flex items-center gap-4 p-4 rounded-xl font-bold transition-all ${
+            location.pathname === '/upgrade' ? 'bg-gray-100 text-black shadow-sm' : 'text-gray-500 hover:bg-gray-50 hover:text-black'
+          }`}
+        >
+          <span className="text-xl">🚀</span> Become a Driver
+        </button>
+      )}
+
+      {/* If they already applied but are waiting for Admin approval */}
+      {authUser?.activeRole === 'rider' && authUser?.driverStatus === 'PENDING' && (
+        <div className="flex items-center gap-4 p-4 rounded-xl font-bold text-yellow-600 bg-yellow-50 mx-2">
+          <span className="text-xl">⏳</span> Application Pending
+        </div>
+      )}
+
+          {/* FIX: Added the Admin Panel Button! (Only visible to Admins) */}
+          {authUser?.isAdmin && (
+            <button 
+              onClick={() => { setIsOpen(false); navigate('/admin'); }}
+              className={`flex items-center gap-4 p-4 rounded-xl font-bold transition-all ${
+                location.pathname === '/admin' ? 'bg-gray-100 text-black shadow-sm' : 'text-gray-500 hover:bg-gray-50 hover:text-black'
+              }`}
+            >
+              <span className="text-xl">🛡️</span> Admin Panel
+            </button>
+          )}
         </div>
 
-        {/* Logout Button (Pinned to Bottom) */}
+        {/* Logout Button */}
         <div className="absolute bottom-0 left-0 w-full p-4 border-t border-gray-100 bg-white">
           <button 
             onClick={handleLogout}
