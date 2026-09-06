@@ -4,8 +4,10 @@ import { useAuthStore } from './store/useAuthStore';
 import { useSocketStore } from './store/useSocketStore';
 
 // Components
+import AdminDashboard from './components/AdminDashboard';
 import RideMap from './components/RideMap';
 import DriverDashboard from './components/DriverDashboard';
+import UpgradeDriver from './components/UpgradeDriver';
 import TripHistory from './components/TripHistory';
 import Login from './components/Login';
 import Sidebar from './components/Sidebar';
@@ -52,6 +54,8 @@ function App() {
             )
           } 
         />
+        <Route path="/admin" element={authUser?.isAdmin ? <AdminDashboard /> : <Navigate to="/" />} />
+        
         <Route 
           path="/history" 
           element={authUser ? <TripHistory /> : <Navigate to="/login" />} 
@@ -60,6 +64,10 @@ function App() {
         <Route 
           path="/login" 
           element={!authUser ? <Login /> : <Navigate to="/" />} 
+        />
+        <Route 
+          path="/upgrade" 
+          element={authUser ? <UpgradeDriver /> : <Navigate to="/login" />} 
         />
       </Routes>
     </>
