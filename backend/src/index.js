@@ -6,6 +6,7 @@ import { connectDB } from './lib/db.js';
 
 import { app, server } from './lib/socket.js'; 
 import authRoutes from './routes/auth.route.js'; 
+import adminRoutes from './routes/admin.route.js';
 import driverRoutes from './routes/driver.route.js';
 import tripRoutes from './routes/trip.route.js';
 
@@ -25,6 +26,7 @@ app.use(express.urlencoded({ limit: "5mb", extended: true }));
 app.use(cookieParser()); 
 
 app.use("/api/auth", authRoutes);
+app.use("/api/admin", adminRoutes);
 app.use("/api/drivers", driverRoutes);
 app.use("/api/trips", tripRoutes);
 

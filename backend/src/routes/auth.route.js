@@ -2,6 +2,7 @@ import express from "express";
 import { 
   signup, 
   driverSignup, 
+  upgradeToDriver,
   login,
   updateProfilePic,
   logout, 
@@ -13,6 +14,7 @@ const router = express.Router();
 
 router.post("/signup", signup);
 router.post("/driver/signup", driverSignup);
+router.post("/upgradeToDriver",protectRoute, upgradeToDriver);
 router.post("/login", login);
 
 // FIX: Changed from /update-profile-pic to /update-profile to match the frontend!

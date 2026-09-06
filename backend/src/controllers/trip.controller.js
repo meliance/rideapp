@@ -322,3 +322,28 @@ export const getTripHistory = async (req, res) => {
     res.status(500).json({ message: "Internal Server Error" });
   }
 };
+
+export const getDriverEarnings = async (req, res) => {
+  try {
+    const driverId = req.user.id; 
+
+    const query = `
+      SELECT 
+        COALESCE(SUM(fare_estimation), 0) AS total_earnings,
+        COUNT(id) AS total_trips
+      FROM trips 
+      WHERE driver_id = $1 AND status = 'COMPLETED'
+    `;
+    
+    const result = await pool.query(query, [driverId]);
+    
+    res.status(200).json({
+      success: true,
+      earnings: result.rows[0].total_earnings,
+      trips: result.rows[0].total_trips
+    });
+  } catch (error) {
+    console.error("Error fetching driver earnings:", error);
+    res.status(500).json({ message: "Internal Server Error" });
+  }
+};

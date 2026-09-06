@@ -35,7 +35,8 @@ export const signup = async (req, res) => {
       name: newUser.name,
       phoneNumber: newUser.phone_number,
       profilePic: newUser.profile_pic,
-      roles: ["rider"]
+      roles: ["rider"],
+      isAdmin: false
     });
   } catch (error) {
     console.error("Error in signup:", error);
@@ -102,7 +103,8 @@ export const driverSignup = async (req, res) => {
       },
       status: newDriver.approval_status,
       roles: ["rider", "driver"],
-      activeRole: "driver"
+      activeRole: "driver",
+      isAdmin: false
     });
 
   } catch (error) {
@@ -134,8 +136,9 @@ export const login = async (req, res) => {
       return res.status(400).json({ message: "Phone number and password are required" });
     }
 
+    // FIX: Added u.is_admin to the SELECT query
     const query = `
-      SELECT u.id, u.name, u.phone_number, u.password_hash, u.profile_pic,
+      SELECT u.id, u.name, u.phone_number, u.password_hash, u.profile_pic, u.is_admin,
              dp.approval_status, dp.license_plate
       FROM users u
       LEFT JOIN driver_profiles dp ON u.id = dp.user_id
@@ -176,7 +179,8 @@ export const login = async (req, res) => {
       profilePic: account.profile_pic,
       roles: roles,
       activeRole: calculatedRole,
-      driverStatus: account.approval_status 
+      driverStatus: account.approval_status,
+      isAdmin: account.is_admin || false // FIX: Send admin status to React
     });
 
   } catch (error) {
@@ -252,9 +256,9 @@ export const upgradeToDriver = async (req, res) => {
 
 export const checkAuth = async (req, res) => {
   try {
-    // 1. Fetch the user and their driver status just like we do in login
+    // FIX: Added u.is_admin to the SELECT query here as well
     const query = `
-      SELECT u.id, u.name, u.phone_number, u.profile_pic,
+      SELECT u.id, u.name, u.phone_number, u.profile_pic, u.is_admin,
              dp.approval_status
       FROM users u
       LEFT JOIN driver_profiles dp ON u.id = dp.user_id
@@ -287,7 +291,8 @@ export const checkAuth = async (req, res) => {
       profilePic: account.profile_pic,
       roles: roles,
       activeRole: calculatedRole,
-      driverStatus: account.approval_status 
+      driverStatus: account.approval_status,
+      isAdmin: account.is_admin || false // FIX: Send admin status to React on refresh
     });
   } catch (error) {
     console.error("Error in checkAuth:", error);

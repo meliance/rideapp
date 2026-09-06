@@ -23,9 +23,9 @@ export const protectRoute = async (req, res, next) => {
     // Safety Fix: Make sure decoded.id matches whatever key you used in generateToken()
     const targetUserId = decoded.id || decoded.userId; 
 
-    // Fetch user details AND driver status without exposing the password hash
+    // Fetch user details, driver status, AND admin status without exposing the password hash
     const query = `
-      SELECT u.id, u.name, u.phone_number, u.profile_pic,
+      SELECT u.id, u.name, u.phone_number, u.profile_pic, u.is_admin,
              dp.approval_status, dp.is_available
       FROM users u
       LEFT JOIN driver_profiles dp ON u.id = dp.user_id
@@ -43,6 +43,9 @@ export const protectRoute = async (req, res, next) => {
     if (user.approval_status !== null) {
         roles.push("driver");
     }
+    if (user.is_admin) {
+        roles.push("admin");
+    }
 
     // Build the request object for down-stream controller use
     req.user = {
@@ -51,6 +54,7 @@ export const protectRoute = async (req, res, next) => {
         phoneNumber: user.phone_number,
         profilePic: user.profile_pic,
         roles: roles,
+        isAdmin: user.is_admin || false, // <--- Added Admin flag
         driverStatus: user.approval_status,
         isDriverAvailable: user.is_available,
         activeSessionRole: decoded.role // Maps out what role they signed in with
@@ -81,6 +85,16 @@ export const requireDriverMode = (req, res, next) => {
 export const requireRiderMode = (req, res, next) => {
   if (req.user.activeSessionRole !== "rider") {
     return res.status(403).json({ message: "Forbidden - Switch back to passenger mode to request a ride" });
+  }
+  next();
+};
+
+// ==========================================
+// NEW: Restricts endpoints strictly to Admins
+// ==========================================
+export const requireAdmin = (req, res, next) => {
+  if (!req.user.isAdmin) {
+    return res.status(403).json({ message: "Forbidden - Admin access required" });
   }
   next();
 };
