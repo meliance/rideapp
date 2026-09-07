@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { useAuthStore } from '../store/useAuthStore';
+import { Link } from "react-router-dom";
 
 export default function Login() {
   const [phoneNumber, setPhoneNumber] = useState('');
@@ -51,6 +52,13 @@ export default function Login() {
             Sign In
           </button>
         </form>
+        <div className="mt-6 text-center text-gray-600">
+          Don't have an account?{" "}
+          <Link to="/signup" className="text-blue-600 hover:text-blue-500 font-semibold transition-colors">
+            Register
+          </Link>
+        </div>
+
       </div>
     </div>
   );
