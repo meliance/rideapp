@@ -2,7 +2,9 @@ import { create } from 'zustand';
 import { io } from 'socket.io-client';
 import { useAuthStore } from './useAuthStore';
 
-const SOCKET_URL = "http://localhost:5000";
+const SOCKET_URL = import.meta.env.MODE === "development" 
+  ? "http://localhost:5000" 
+  : "https://rideapp-so1i.onrender.com";
 
 export const useSocketStore = create((set, get) => ({
   socket: null,
