@@ -9,6 +9,7 @@ import RideMap from './components/RideMap';
 import DriverDashboard from './components/DriverDashboard';
 import UpgradeDriver from './components/UpgradeDriver';
 import TripHistory from './components/TripHistory';
+import Signup from './components/Signup';
 import Login from './components/Login';
 import Sidebar from './components/Sidebar';
 import Profile from './components/Profile';
@@ -68,6 +69,10 @@ function App() {
         <Route 
           path="/upgrade" 
           element={authUser ? <UpgradeDriver /> : <Navigate to="/login" />} 
+        />
+        <Route 
+          path="/signup" 
+          element={!authUser ? <Signup /> : <Navigate to="/" />} 
         />
       </Routes>
     </>

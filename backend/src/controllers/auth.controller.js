@@ -28,7 +28,8 @@ export const signup = async (req, res) => {
     const newUserResult = await pool.query(newUserQuery, [name, phoneNumber, hashedPassword]);
     const newUser = newUserResult.rows[0];
 
-    generateToken(newUser.id, "rider", res);
+    // PASSENGERS GET PERSISTENT COOKIES (isSessionOnly = false)
+    generateToken(newUser.id, "rider", res, false);
 
     res.status(201).json({
       id: newUser.id,
@@ -44,11 +45,10 @@ export const signup = async (req, res) => {
   }
 };
 
-// 2. FIRST-TIME DRIVER SIGNUP (Fixed Database Client Placement)
+// 2. FIRST-TIME DRIVER SIGNUP
 export const driverSignup = async (req, res) => {
   const { name, phoneNumber, password, vehicleMake, vehicleModel, licensePlate } = req.body;
   
-  // FIX: Declare client variable outside so 'finally' block can access it safely
   let client;
   
   try {
@@ -56,7 +56,6 @@ export const driverSignup = async (req, res) => {
       return res.status(400).json({ message: "All fields are required" });
     }
 
-    // FIX: Safely retrieve client inside try block to capture connection failures gracefully
     client = await pool.connect();
 
     const userExists = await client.query('SELECT id FROM users WHERE phone_number = $1', [phoneNumber]);
@@ -67,17 +66,14 @@ export const driverSignup = async (req, res) => {
     const salt = await bcrypt.genSalt(10);
     const hashedPassword = await bcrypt.hash(password, salt);
 
-    // BEGIN TRANSACTION
     await client.query('BEGIN');
 
-    // Step A: Create the core identity
     const userResult = await client.query(
       `INSERT INTO users (name, phone_number, password_hash) VALUES ($1, $2, $3) RETURNING id, name, phone_number`,
       [name, phoneNumber, hashedPassword]
     );
     const newUserId = userResult.rows[0].id;
 
-    // Step B: Create the driver profile linked to the new user ID
     const driverResult = await client.query(
       `INSERT INTO driver_profiles (user_id, vehicle_make, vehicle_model, license_plate) 
        VALUES ($1, $2, $3, $4) 
@@ -85,13 +81,11 @@ export const driverSignup = async (req, res) => {
       [newUserId, vehicleMake, vehicleModel, licensePlate]
     );
 
-    // COMMIT TRANSACTION (Saves both tables permanently)
     await client.query('COMMIT');
-
     const newDriver = driverResult.rows[0];
 
-    // Default to logging them in as a driver
-    generateToken(newUserId, "driver", res);
+    // DRIVERS LOG IN EVERY TIME (isSessionOnly = true)
+    generateToken(newUserId, "driver", res, true);
 
     res.status(201).json({
       id: newUserId,
@@ -108,26 +102,19 @@ export const driverSignup = async (req, res) => {
     });
 
   } catch (error) {
-    // FIX: Only rollback if the connection was successfully established and a transaction started
-    if (client) {
-      await client.query('ROLLBACK');
-    }
-    
+    if (client) await client.query('ROLLBACK');
     console.error("Error in driver signup:", error);
     
-    if (error.code === '23505') { // Postgres unique violation error code
+    if (error.code === '23505') { 
       return res.status(400).json({ message: "License plate or phone number already in use" });
     }
     res.status(500).json({ message: "Internal Server Error" });
   } finally {
-    // FIX: Safe check to ensure we only release client if it was instantiated
-    if (client) {
-      client.release();
-    }
+    if (client) client.release();
   }
 };
 
-// 3. Login Route (Handles both Riders and Drivers)
+// 3. Login Route
 export const login = async (req, res) => {
   const { phoneNumber, password } = req.body;
   
@@ -136,7 +123,6 @@ export const login = async (req, res) => {
       return res.status(400).json({ message: "Phone number and password are required" });
     }
 
-    // FIX: Added u.is_admin to the SELECT query
     const query = `
       SELECT u.id, u.name, u.phone_number, u.password_hash, u.profile_pic, u.is_admin,
              dp.approval_status, dp.license_plate
@@ -159,16 +145,15 @@ export const login = async (req, res) => {
 
     const roles = ["rider"];
     const isDriver = account.approval_status !== null;
-    
-    if (isDriver) {
-      roles.push("driver");
-    }
+    if (isDriver) roles.push("driver");
 
-    // Optimization: If their driver account is suspended or rejected, force them into rider mode!
     const isApprovedDriver = isDriver && account.approval_status === "APPROVED";
     const activeRole = isApprovedDriver ? "driver" : "rider";
 
-    generateToken(account.id, activeRole, res);
+    // SECURITY CHECK: If they are a driver OR an admin, force session-only login!
+    const isSessionOnly = activeRole === "driver" || account.is_admin;
+    
+    generateToken(account.id, activeRole, res, isSessionOnly);
     
     const calculatedRole = roles.includes("driver") ? "driver" : "rider";
 
@@ -180,7 +165,7 @@ export const login = async (req, res) => {
       roles: roles,
       activeRole: calculatedRole,
       driverStatus: account.approval_status,
-      isAdmin: account.is_admin || false // FIX: Send admin status to React
+      isAdmin: account.is_admin || false 
     });
 
   } catch (error) {
@@ -209,7 +194,6 @@ export const upgradeToDriver = async (req, res) => {
       return res.status(400).json({ message: "All vehicle details are required" });
     }
 
-    // 1. Verify that they aren't already a driver
     const driverExists = await pool.query(
       "SELECT user_id FROM driver_profiles WHERE user_id = $1", 
       [userId]
@@ -219,7 +203,6 @@ export const upgradeToDriver = async (req, res) => {
       return res.status(400).json({ message: "You already have a driver profile linked to this account" });
     }
 
-    // 2. Insert the new driver profile linked to their existing user ID
     const insertQuery = `
       INSERT INTO driver_profiles (user_id, vehicle_make, vehicle_model, license_plate, approval_status)
       VALUES ($1, $2, $3, $4, 'PENDING')
@@ -229,7 +212,8 @@ export const upgradeToDriver = async (req, res) => {
     const result = await pool.query(insertQuery, [userId, vehicleMake, vehicleModel, licensePlate]);
     const driverProfile = result.rows[0];
 
-    generateToken(userId, "rider", res);
+    // They are applying to be a driver, but act as a rider until approved
+    generateToken(userId, "rider", res, false);
 
     res.status(200).json({
       message: "Driver application submitted successfully",
@@ -245,18 +229,15 @@ export const upgradeToDriver = async (req, res) => {
 
   } catch (error) {
     console.error("Error in upgradeToDriver:", error);
-    
-    if (error.code === '23505') { // Postgres unique violation for license_plate
+    if (error.code === '23505') { 
       return res.status(400).json({ message: "This license plate is already registered to another driver" });
     }
-    
     res.status(500).json({ message: "Internal Server Error" });
   }
 };
 
 export const checkAuth = async (req, res) => {
   try {
-    // FIX: Added u.is_admin to the SELECT query here as well
     const query = `
       SELECT u.id, u.name, u.phone_number, u.profile_pic, u.is_admin,
              dp.approval_status
@@ -272,18 +253,12 @@ export const checkAuth = async (req, res) => {
       return res.status(404).json({ message: "User not found" });
     }
 
-    // 2. Rebuild the roles array
     const roles = ["rider"];
     const isDriver = account.approval_status !== null;
-    
-    if (isDriver) {
-      roles.push("driver");
-    }
+    if (isDriver) roles.push("driver");
 
-    // 3. Dynamically set the active role
     const calculatedRole = roles.includes("driver") ? "driver" : "rider";
 
-    // 4. Send the exact same payload structure as the login route
     res.status(200).json({
       id: account.id,
       name: account.name,
@@ -292,7 +267,7 @@ export const checkAuth = async (req, res) => {
       roles: roles,
       activeRole: calculatedRole,
       driverStatus: account.approval_status,
-      isAdmin: account.is_admin || false // FIX: Send admin status to React on refresh
+      isAdmin: account.is_admin || false 
     });
   } catch (error) {
     console.error("Error in checkAuth:", error);
@@ -309,12 +284,10 @@ export const updateProfilePic = async (req, res) => {
       return res.status(400).json({ message: "Profile picture is required" });
     }
 
-    // 1. Fetch the user's current profile picture URL from PostgreSQL
     const selectQuery = "SELECT profile_pic FROM users WHERE id = $1";
     const userCheck = await pool.query(selectQuery, [userId]);
     const currentPicUrl = userCheck.rows[0]?.profile_pic;
 
-    // 2. Clear old assets out of Cloudinary to avoid massive billing leaks
     if (currentPicUrl && currentPicUrl.includes("cloudinary.com")) {
       try {
         const urlParts = currentPicUrl.split("/");
@@ -327,14 +300,12 @@ export const updateProfilePic = async (req, res) => {
       }
     }
 
-    // 3. Upload new base64 string to Cloudinary with explicit filters & transforms
     const uploadResponse = await cloudinary.uploader.upload(profilePic, {
       folder: "ride_app_profiles",
       allowed_formats: ["jpg", "jpeg", "png", "webp"],
       transformation: [{ width: 400, height: 400, crop: "fill", quality: "auto" }]
     });
 
-    // 4. Update the user in PostgreSQL
     const updateQuery = `
       UPDATE users 
       SET profile_pic = $1 
@@ -352,12 +323,9 @@ export const updateProfilePic = async (req, res) => {
 
   } catch (error) {
     console.error("Error in updateProfilePic:", error);
-    
-    // Catch Cloudinary payload too large errors (HTTP 413)
     if (error.http_code === 413) {
         return res.status(413).json({ message: "Image file size is too large" });
     }
-    
     res.status(500).json({ message: "Internal Server Error" });
   }
 };
