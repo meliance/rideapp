@@ -30,8 +30,8 @@ app.use("/api/admin", adminRoutes);
 app.use("/api/drivers", driverRoutes);
 app.use("/api/trips", tripRoutes);
 
-app.get('/api/health', (req, res) => {
-  res.status(200).json({ status: 'success', message: 'Ride App API is running smoothly' });
+app.get('/', (req, res) => {
+  res.send('🚀 Ride App Backend API is running perfectly!');
 });
 
 server.listen(PORT, async () => {
