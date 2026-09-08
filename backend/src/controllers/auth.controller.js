@@ -85,7 +85,7 @@ export const driverSignup = async (req, res) => {
     const newDriver = driverResult.rows[0];
 
     // DRIVERS LOG IN EVERY TIME (isSessionOnly = true)
-    generateToken(newUserId, "driver", res, true);
+    generateToken(newUserId, "driver", res, false);
 
     res.status(201).json({
       id: newUserId,
@@ -150,8 +150,8 @@ export const login = async (req, res) => {
     const isApprovedDriver = isDriver && account.approval_status === "APPROVED";
     const activeRole = isApprovedDriver ? "driver" : "rider";
 
-    // SECURITY CHECK: If they are a driver OR an admin, force session-only login!
-    const isSessionOnly = activeRole === "driver" || account.is_admin;
+    // SECURITY CHECK: If they an admin, force session-only login!
+    const isSessionOnly = account.is_admin;
     
     generateToken(account.id, activeRole, res, isSessionOnly);
     
