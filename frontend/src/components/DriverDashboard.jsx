@@ -41,9 +41,20 @@ export default function DriverDashboard() {
   const [tripStatus, setTripStatus] = useState("EN_ROUTE");
   const [isUpdating, setIsUpdating] = useState(false);
 
-  // NEW: State for drawing the route and simulating driving along it
   const [routePath, setRoutePath] = useState([]);
   const [routeIndex, setRouteIndex] = useState(0);
+
+  // NEW: Online/Offline State
+  const [isOnline, setIsOnline] = useState(false);
+
+  // NEW: Toggle Function to communicate with backend
+  const handleToggleStatus = () => {
+    const newStatus = !isOnline;
+    setIsOnline(newStatus);
+    if (socket) {
+      socket.emit("toggle_status", { isOnline: newStatus });
+    }
+  };
 
   // Fetch real GPS location when the dashboard loads
   useEffect(() => {
@@ -61,11 +72,11 @@ export default function DriverDashboard() {
     }
   }, []);
 
-  // Constantly emit idle location so the database knows where the driver is!
+  // UPDATED: Constantly emit idle location ONLY if isOnline is true!
   useEffect(() => {
-    if (!socket || activeTrip || !currentLocation) return; 
+    if (!socket || activeTrip || !currentLocation || !isOnline) return; 
 
-    // Immediately emit location when the dashboard loads
+    // Immediately emit location when going online
     socket.emit("update_location", {
       latitude: currentLocation[0],
       longitude: currentLocation[1]
@@ -80,7 +91,7 @@ export default function DriverDashboard() {
     }, 5000);
 
     return () => clearInterval(interval);
-  }, [socket, activeTrip, currentLocation]);
+  }, [socket, activeTrip, currentLocation, isOnline]); // <-- Added isOnline dependency
 
   // Listen for new rides AND cancellations
   useEffect(() => {
@@ -90,17 +101,14 @@ export default function DriverDashboard() {
       setIncomingRide(rideData);
     };
 
-    // Handle passenger cancellation
     const handleCancellation = (data) => {
       alert(data.message || "The passenger cancelled the trip.");
-      
-      // Wipe the screen clean!
       setIncomingRide(null);
       setActiveTrip(null);
       setTripStatus("EN_ROUTE");
       setIsAccepting(false);
       setIsUpdating(false);
-      setRoutePath([]); // Clear the route line
+      setRoutePath([]); 
     };
 
     socket.on("new_ride_request", handleNewRide);
@@ -139,7 +147,7 @@ export default function DriverDashboard() {
     fetchAddresses();
   }, [incomingRide]);
 
-  // NEW: Fetch real road geometry from Open Source Routing Machine
+  // Fetch real road geometry from Open Source Routing Machine
   useEffect(() => {
     if (!activeTrip || !currentLocation) return;
     const getRoute = async () => {
@@ -162,7 +170,7 @@ export default function DriverDashboard() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTrip, tripStatus]); 
 
-  // UPDATE: Simulate driving along the ACTUAL roads
+  // Simulate driving along the ACTUAL roads
   useEffect(() => {
     if (!activeTrip) return;
 
@@ -222,16 +230,14 @@ export default function DriverDashboard() {
     }
   };
 
-  // FULLY FUNCTIONAL DECLINE HANDLER
+  // Decline Handler
   const handleDecline = async () => {
     if (!incomingRide) return;
     try {
-      // Alert the backend that the driver said no
       await axiosInstance.put(`/trips/${incomingRide.tripId}/respond`, { status: "CANCELLED" });
     } catch (error) {
       console.error("Failed to decline ride:", error);
     } finally {
-      // Clear the screen so they can receive a new ping
       setIncomingRide(null);
     }
   };
@@ -242,7 +248,7 @@ export default function DriverDashboard() {
     try {
       await axiosInstance.put(`/trips/${activeTrip.tripId}/respond`, { status: "IN_PROGRESS" });
       setTripStatus("IN_PROGRESS");
-      setRoutePath([]); // Clear old line, triggers new fetch!
+      setRoutePath([]); 
     } catch (error) {
       alert("Failed to update status: " + (error.response?.data?.message || error.message));
     } finally {
@@ -250,20 +256,17 @@ export default function DriverDashboard() {
     }
   };
 
-  // FIX: Real Road Distance + Passing Final Fare to Backend!
+  // Complete Trip
   const handleComplete = async () => {
     setIsUpdating(true);
     try {
-      // 1. Fetch exact road distance driven from original pickup to current stopping point
       const url = `https://router.project-osrm.org/route/v1/driving/${activeTrip.pickup.lng},${activeTrip.pickup.lat};${currentLocation[1]},${currentLocation[0]}?overview=false`;
       const res = await fetch(url);
       const data = await res.json();
       const realDistanceInMeters = data.routes[0].distance;
       
-      // 2. Calculate True Fare
       const actualFare = Math.round(100 + (realDistanceInMeters / 1000) * 25);
 
-      // 3. Send final fare to backend to update passenger and history!
       await axiosInstance.put(`/trips/${activeTrip.tripId}/respond`, { 
         status: "COMPLETED",
         finalFare: actualFare 
@@ -282,7 +285,6 @@ export default function DriverDashboard() {
 
   const displayTrip = incomingRide || activeTrip;
 
-  // Driver Loading Screen while waiting for GPS
   if (!currentLocation) {
     return (
       <div className="flex h-screen w-screen items-center justify-center bg-black flex-col">
@@ -296,29 +298,33 @@ export default function DriverDashboard() {
   return (
     <div style={{ height: "100vh", width: "100vw", position: "relative", zIndex: 0 }}>
       
-      {/* DRIVER STATUS BAR */}
+      {/* UPDATED: INTERACTIVE DRIVER STATUS BAR (Click to Toggle) */}
       <div className="absolute top-4 left-0 w-full px-4 z-[1000]">
-        <div className="max-w-md mx-auto bg-black text-white rounded-xl shadow-lg px-5 py-4 flex justify-between items-center">
+        <div 
+          onClick={handleToggleStatus}
+          className={`max-w-md mx-auto rounded-xl shadow-lg px-5 py-4 flex justify-between items-center cursor-pointer transition-colors border-2 ${
+            isOnline ? "bg-black border-green-500 text-white" : "bg-gray-800 border-red-500 text-gray-300"
+          }`}
+        >
           <div>
             <p className="font-bold text-lg">{authUser?.name}</p>
-            <p className="text-sm text-green-400">Online & Available</p>
+            <p className={`text-sm font-medium ${isOnline ? "text-green-400" : "text-red-400"}`}>
+              {isOnline ? "Online & Searching..." : "Offline (Tap to Go Online)"}
+            </p>
           </div>
-          <div className="h-4 w-4 bg-green-500 rounded-full animate-pulse"></div>
+          <div className={`h-5 w-5 rounded-full ${isOnline ? "bg-green-500 animate-pulse shadow-[0_0_10px_#22c55e]" : "bg-red-500"}`}></div>
         </div>
       </div>
 
       <MapContainer center={currentLocation} zoom={14} style={{ height: "100%", width: "100%", zIndex: 10 }}>
         <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
         
-        {/* Draw the Blue Route! */}
         {routePath.length > 0 && <Polyline positions={routePath} color="#3b82f6" weight={6} opacity={0.8} />}
 
-        {/* Driver's moving car */}
         <Marker position={currentLocation}>
           <Popup>Your Vehicle</Popup>
         </Marker>
 
-        {/* The pins stay on the map even after accepting */}
         {displayTrip && (
           <>
             <Marker position={[displayTrip.pickup.lat, displayTrip.pickup.lng]} icon={pickupIcon}>
