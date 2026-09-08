@@ -9,7 +9,7 @@ export const generateToken = (id, role, res, isSessionOnly = false) => {
     
     const cookieOptions = {
         httpOnly: true, 
-        sameSite: "strict",
+        sameSite: process.env.NODE_ENV !== "development" ? "none" : "strict",
         secure: process.env.NODE_ENV !== "development"
     };
 
