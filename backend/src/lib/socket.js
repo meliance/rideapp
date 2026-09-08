@@ -22,7 +22,6 @@ io.use(async (socket, next) => {
       return next(new Error("Authentication error - No cookies provided"));
     }
 
-    // --- NEW: Bulletproof Vanilla JS Cookie Parser ---
     const cookies = {};
     rawCookies.split(";").forEach((cookieString) => {
       const [key, value] = cookieString.split("=");
@@ -32,13 +31,11 @@ io.use(async (socket, next) => {
     });
     
     const token = cookies.jwt;
-    // ------------------------------------------------
 
     if (!token) {
       return next(new Error("Authentication error - No token found"));
     }
 
-    // Decode token securely using your existing system secret
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
     
     socket.userId = decoded.id;
@@ -56,35 +53,40 @@ io.on("connection", async (socket) => {
 
   socket.join(`user_${userId}`);
 
-  if (activeRole === "driver") {
+  // FIX 1: Removed the auto-online block. 
+  // Drivers stay OFFLINE until they physically tap the "Go Online" button on the frontend.
+
+  // NEW: Let the frontend control when the driver goes online/offline
+  socket.on("toggle_status", async ({ isOnline }) => {
+    if (activeRole !== "driver") return;
     try {
       await pool.query(
-        "UPDATE driver_profiles SET is_available = true WHERE user_id = $1 AND approval_status = 'APPROVED'",
-        [userId]
+        "UPDATE driver_profiles SET is_available = $1 WHERE user_id = $2 AND approval_status = 'APPROVED'",
+        [isOnline, userId]
       );
-      console.log(`Driver ${userId} status set to AVAILABLE in database`);
-    } catch (dbErr) {
-      console.error("Error setting driver available on connection:", dbErr);
+      console.log(`Driver ${userId} manually toggled status to: ${isOnline ? "ONLINE" : "OFFLINE"}`);
+    } catch (err) {
+      console.error(`Failed to toggle status for driver ${userId}:`, err);
     }
-  }
+  });
 
   socket.on("update_location", async (coords) => {
-    // 1. Extract passengerId from the incoming payload
     const { latitude, longitude, bearing, passengerId } = coords;
 
-    if (socket.activeRole !== "driver") return;
+    if (activeRole !== "driver") return;
 
     try {
+      // FIX 2: Added ::geography and parseFloat to ensure it perfectly matches the live database!
       const spatialQuery = `
         UPDATE driver_profiles 
-        SET location = ST_SetSRID(ST_MakePoint($1, $2), 4326),
+        SET location = ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography,
             bearing = $3,
             updated_at = CURRENT_TIMESTAMP
         WHERE user_id = $4
       `;
-      await pool.query(spatialQuery, [longitude, latitude, bearing || 0, userId]);
       
-      // 2. NEW: Forward the coordinates directly to the passenger!
+      await pool.query(spatialQuery, [parseFloat(longitude), parseFloat(latitude), bearing || 0, userId]);
+      
       if (passengerId) {
         io.to(`user_${passengerId}`).emit("driver_location_update", { latitude, longitude });
       }
@@ -92,20 +94,21 @@ io.on("connection", async (socket) => {
     } catch (err) {
       console.error(`Failed to update coordinates for driver ${userId}:`, err);
     }
-    });
+  });
 
   socket.on("disconnect", async () => {
     console.log(`User ${userId} disconnected from socket ${socket.id}`);
 
     const remainingSockets = await io.in(`user_${userId}`).fetchSockets();
     
+    // Safety Net: If the driver closes the app entirely, force them offline so passengers don't request ghost drivers.
     if (remainingSockets.length === 0 && activeRole === "driver") {
       try {
         await pool.query(
           "UPDATE driver_profiles SET is_available = false WHERE user_id = $1",
           [userId]
         );
-        console.log(`Driver ${userId} has left completely. Marked OFFLINE.`);
+        console.log(`Driver ${userId} closed the app. Force marked OFFLINE.`);
       } catch (dbErr) {
         console.error("Error cleaning up driver status on disconnect:", dbErr);
       }
