@@ -12,7 +12,20 @@ export const signup = async (req, res) => {
       return res.status(400).json({ message: "All fields are required" });
     }
 
-    const userExists = await pool.query('SELECT id FROM users WHERE phone_number = $1', [phoneNumber]);
+    // FIX: Enforce Ethiopian phone number format (Starts with 7 or 9, exactly 9 digits)
+    if (!/^[79]\d{8}$/.test(phoneNumber)) {
+      return res.status(400).json({ message: "Phone number must start with 7 or 9 and be exactly 9 digits long" });
+    }
+
+    if (password.length < 4) {
+      return res.status(400).json({ message: "Password must be at least 4 characters long" });
+    }
+
+    // FIX: Programmatically add the +251 country code
+    const formattedPhone = `+251${phoneNumber}`;
+
+    // Use formattedPhone for the database check
+    const userExists = await pool.query('SELECT id FROM users WHERE phone_number = $1', [formattedPhone]);
     if (userExists.rows.length > 0) {
       return res.status(400).json({ message: "Phone number already exists" });
     }
@@ -20,12 +33,13 @@ export const signup = async (req, res) => {
     const salt = await bcrypt.genSalt(10);
     const hashedPassword = await bcrypt.hash(password, salt);
 
+    // Use formattedPhone for the database insert
     const newUserQuery = `
       INSERT INTO users (name, phone_number, password_hash) 
       VALUES ($1, $2, $3) 
       RETURNING id, name, phone_number, profile_pic
     `;
-    const newUserResult = await pool.query(newUserQuery, [name, phoneNumber, hashedPassword]);
+    const newUserResult = await pool.query(newUserQuery, [name, formattedPhone, hashedPassword]);
     const newUser = newUserResult.rows[0];
 
     // PASSENGERS GET PERSISTENT COOKIES (isSessionOnly = false)
@@ -56,9 +70,23 @@ export const driverSignup = async (req, res) => {
       return res.status(400).json({ message: "All fields are required" });
     }
 
+    // FIX: Enforce Ethiopian phone number format for drivers too
+    if (!/^[79]\d{8}$/.test(phoneNumber)) {
+      return res.status(400).json({ message: "Phone number must start with 7 or 9 and be exactly 9 digits long" });
+    }
+
+    // FIX: Password length validation for drivers
+    if (password.length < 4) {
+      return res.status(400).json({ message: "Password must be at least 4 characters long" });
+    }
+
+    // FIX: Programmatically add the +251 country code
+    const formattedPhone = `+251${phoneNumber}`;
+
     client = await pool.connect();
 
-    const userExists = await client.query('SELECT id FROM users WHERE phone_number = $1', [phoneNumber]);
+    // Use formattedPhone for the database check
+    const userExists = await client.query('SELECT id FROM users WHERE phone_number = $1', [formattedPhone]);
     if (userExists.rows.length > 0) {
       return res.status(400).json({ message: "Phone number already exists. Please log in to upgrade to a driver account." });
     }
@@ -68,9 +96,10 @@ export const driverSignup = async (req, res) => {
 
     await client.query('BEGIN');
 
+    // Use formattedPhone for the database insert
     const userResult = await client.query(
       `INSERT INTO users (name, phone_number, password_hash) VALUES ($1, $2, $3) RETURNING id, name, phone_number`,
-      [name, phoneNumber, hashedPassword]
+      [name, formattedPhone, hashedPassword]
     );
     const newUserId = userResult.rows[0].id;
 
@@ -84,7 +113,7 @@ export const driverSignup = async (req, res) => {
     await client.query('COMMIT');
     const newDriver = driverResult.rows[0];
 
-    // DRIVERS LOG IN EVERY TIME (isSessionOnly = true)
+    // DRIVERS GET PERSISTENT COOKIES (isSessionOnly = false)
     generateToken(newUserId, "driver", res, false);
 
     res.status(201).json({
