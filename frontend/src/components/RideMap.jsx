@@ -304,16 +304,16 @@ export default function RideMap() {
 
   return (
     <div style={{ height: "100vh", width: "100vw", position: "relative", zIndex: 0 }}>
-      
+    
       {/* SEARCH BAR LAYER (Top) */}
-      <div className="absolute top-4 left-0 w-full px-4 z-[1000]">
+      <div className="absolute top-4 left-12 w-full px-4 z-[1000]">
         <div className="max-w-md mx-auto relative">
           <input 
             type="text" 
             placeholder="Where to?" 
             value={searchQuery}
             onChange={handleSearch}
-            className="w-full bg-white rounded-xl shadow-lg px-5 py-4 text-lg font-bold border-2 border-transparent focus:border-black focus:outline-none transition-all"
+            className="w-full bg-white rounded-xl shadow-lg pl-4 pr-5 py-4 text-lg font-bold border-2 border-transparent focus:border-black focus:outline-none transition-all"
           />
           
           {/* Search Results Dropdown */}
