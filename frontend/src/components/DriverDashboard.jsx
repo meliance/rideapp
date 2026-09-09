@@ -45,7 +45,9 @@ export default function DriverDashboard() {
   const [routeIndex, setRouteIndex] = useState(0);
 
   // NEW: Online/Offline State
-  const [isOnline, setIsOnline] = useState(false);
+  const [isOnline, setIsOnline] = useState(() => {
+    return localStorage.getItem("driverIsOnline") === "true";
+  });
 
   // NEW: Toggle Function to communicate with backend
   const handleToggleStatus = () => {
@@ -56,7 +58,17 @@ export default function DriverDashboard() {
     }
   };
 
-  // Fetch real GPS location when the dashboard loads
+  // 1. Save to browser memory every time they toggle
+useEffect(() => {
+  localStorage.setItem("driverIsOnline", isOnline);
+}, [isOnline]);
+
+useEffect(() => {
+  if (socket && isOnline) {
+    socket.emit("toggle_status", { isOnline: true });
+  }
+}, [socket]);
+
   useEffect(() => {
     if (navigator.geolocation) {
       navigator.geolocation.getCurrentPosition(
