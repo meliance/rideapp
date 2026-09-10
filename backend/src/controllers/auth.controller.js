@@ -264,13 +264,12 @@ export const upgradeToDriver = async (req, res) => {
 
 export const checkAuth = async (req, res) => {
   try {
-    // req.userId comes from your protectRoute middleware
     const userId = req.user.id; 
 
-    // FIX: Use a LEFT JOIN to fetch the approval_status from driver_profiles
+    // FIX: Added u.is_admin to the SELECT query
     const query = `
       SELECT 
-        u.id, u.name, u.phone_number, u.profile_pic,
+        u.id, u.name, u.phone_number, u.profile_pic, u.is_admin,
         dp.approval_status, dp.vehicle_make, dp.license_plate
       FROM users u
       LEFT JOIN driver_profiles dp ON u.id = dp.user_id
@@ -284,7 +283,6 @@ export const checkAuth = async (req, res) => {
       return res.status(404).json({ message: "User not found" });
     }
 
-    // Determine roles based on whether a driver profile exists
     const roles = user.approval_status ? ["rider", "driver"] : ["rider"];
     const activeRole = user.approval_status ? "driver" : "rider";
 
@@ -293,16 +291,15 @@ export const checkAuth = async (req, res) => {
       name: user.name,
       phoneNumber: user.phone_number,
       profilePic: user.profile_pic,
-      
       status: user.approval_status, 
-      
       vehicle: user.vehicle_make ? { 
         make: user.vehicle_make, 
         plate: user.license_plate 
       } : null,
       roles: roles,
       activeRole: activeRole,
-      isAdmin: false
+      // FIX: Now dynamically pulls the admin status from the database!
+      isAdmin: user.is_admin || false 
     });
   } catch (error) {
     console.error("Error in checkAuth:", error);
