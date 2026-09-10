@@ -4,7 +4,7 @@ import 'leaflet/dist/leaflet.css';
 import L from 'leaflet';
 import { axiosInstance } from '../lib/axios';
 import { useSocketStore } from '../store/useSocketStore';
-import { useAuthStore } from '../store/useAuthStore'; // <-- NEW: Imported for greeting
+import { useAuthStore } from '../store/useAuthStore'; 
 
 // --- VITE DEFAULT ICON FIX ---
 import icon from 'leaflet/dist/images/marker-icon.png';
@@ -27,10 +27,19 @@ const destinationIcon = new L.Icon({
 
 export default function RideMap() {
   const { socket } = useSocketStore();
-  const { authUser } = useAuthStore(); // Grab user for personalized greeting
+  const { authUser } = useAuthStore(); 
 
-  // NEW: UI State to hide/show the map
   const [showMap, setShowMap] = useState(false);
+
+  // NEW: State for Recent Searches using LocalStorage
+  const [recentSearches, setRecentSearches] = useState(() => {
+    try {
+      const saved = localStorage.getItem('rideApp_recentSearches');
+      return saved ? JSON.parse(saved) : [];
+    } catch (e) {
+      return [];
+    }
+  });
 
   const [drivers, setDrivers] = useState([]);
   const [isRequesting, setIsRequesting] = useState(false);
@@ -52,7 +61,6 @@ export default function RideMap() {
   const finalDriverLocation = useRef(null);
   const searchTimeoutRef = useRef(null);
 
-  // Dynamic Time-Based Greeting
   const hour = new Date().getHours();
   const greeting = hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening';
   const firstName = authUser?.name?.split(' ')[0] || 'there';
@@ -141,7 +149,7 @@ export default function RideMap() {
           setTripStatus(null); 
           setRoutePath([]); 
           setAssignedDriver(null);
-          setShowMap(false); // <-- NEW: Return to welcome screen on completion
+          setShowMap(false); 
         }, 100);
       }
       else if (data.status === "CANCELLED") {
@@ -198,7 +206,6 @@ export default function RideMap() {
     getRouteAndFee();
   }, [tripStatus, liveDriverLocation, position, destination]);
 
-  // NEW: Extracted search logic so we can reuse it
   const executeSearch = (query) => {
     if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current);
     if (query.length < 3) {
@@ -232,6 +239,16 @@ export default function RideMap() {
     setDestination({ name: placeName, lat, lng });
     setSearchQuery(placeName);
     setSearchResults([]);
+
+    // NEW: Save to Recent Searches memory
+    setRecentSearches((prev) => {
+      // Remove it if it already exists so we don't get duplicates
+      const filtered = prev.filter(item => item.name !== placeName);
+      // Add it to the front, and keep only the latest 3
+      const updated = [{ name: placeName, lat, lng }, ...filtered].slice(0, 3);
+      localStorage.setItem('rideApp_recentSearches', JSON.stringify(updated));
+      return updated;
+    });
   };
 
   const handleRequestRide = async () => {
@@ -282,12 +299,11 @@ export default function RideMap() {
   };
 
   // ==========================================
-  // 1. WELCOME OVERLAY (Hides map initially)
+  // 1. WELCOME OVERLAY
   // ==========================================
   if (!showMap) {
     return (
       <div className="min-h-screen bg-gray-50 flex flex-col pt-32 px-6 relative overflow-hidden">
-        {/* Ambient Glows */}
         <div className="absolute top-[-10%] left-[-10%] w-72 h-72 bg-blue-300 rounded-full mix-blend-multiply filter blur-3xl opacity-40"></div>
         <div className="absolute top-[20%] right-[-10%] w-72 h-72 bg-purple-300 rounded-full mix-blend-multiply filter blur-3xl opacity-40"></div>
 
@@ -306,9 +322,9 @@ export default function RideMap() {
                 executeSearch(searchQuery);
               }
             }} 
-            className="bg-white p-3 rounded-2xl shadow-xl border border-gray-100 flex items-center gap-3 focus-within:ring-2 focus-within:ring-blue-500 transition-all"
+            className="bg-white p-2 sm:p-3 rounded-2xl shadow-xl border border-gray-100 flex items-center gap-2 sm:gap-3 focus-within:ring-2 focus-within:ring-blue-500 transition-all"
           >
-            <div className="w-12 h-12 bg-gray-100 rounded-full flex items-center justify-center text-xl shadow-inner flex-shrink-0">
+            <div className="w-10 h-10 sm:w-12 sm:h-12 bg-gray-100 rounded-full flex items-center justify-center text-lg sm:text-xl shadow-inner flex-shrink-0">
               📍
             </div>
             <input 
@@ -316,36 +332,47 @@ export default function RideMap() {
               placeholder="Search destination..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              className="flex-grow text-gray-900 font-bold text-lg bg-transparent border-none focus:outline-none placeholder-gray-400"
+              className="min-w-0 w-full flex-1 text-gray-900 font-bold text-base sm:text-lg bg-transparent border-none focus:outline-none placeholder-gray-400"
             />
             <button 
               type="submit" 
-              disabled={!searchQuery.trim()} 
-              className="bg-black text-white px-5 py-3 rounded-xl font-bold disabled:bg-gray-300 disabled:text-gray-500 hover:bg-gray-800 transition-colors"
+              disabled={!searchQuery.trim()}
+              className="flex-shrink-0 bg-black text-white px-4 py-2 sm:px-5 sm:py-3 rounded-xl font-bold disabled:bg-gray-300 disabled:text-gray-500 hover:bg-gray-800 transition-colors"
             >
               Search
             </button>
           </form>
-
-          <div className="mt-8 flex gap-4 overflow-x-auto pb-4" style={{ scrollbarWidth: 'none' }}>
-            <button 
-              onClick={() => { setSearchQuery('Bole Airport'); setShowMap(true); executeSearch('Bole Airport'); }}
-              className="flex-shrink-0 bg-white px-5 py-3 rounded-xl shadow-sm border border-gray-100 font-bold text-gray-700 flex items-center gap-2 hover:bg-gray-50 hover:border-blue-200 transition-colors"
-            >
-              ✈️ Airport
-            </button>
-            <button 
-              onClick={() => { setSearchQuery('Piassa'); setShowMap(true); executeSearch('Piassa'); }}
-              className="flex-shrink-0 bg-white px-5 py-3 rounded-xl shadow-sm border border-gray-100 font-bold text-gray-700 flex items-center gap-2 hover:bg-gray-50 hover:border-blue-200 transition-colors"
-            >
-              🏛️ Piassa
-            </button>
-            <button 
-              onClick={() => { setSearchQuery('Bole Medhanialem'); setShowMap(true); executeSearch('Bole Medhanialem'); }}
-              className="flex-shrink-0 bg-white px-5 py-3 rounded-xl shadow-sm border border-gray-100 font-bold text-gray-700 flex items-center gap-2 hover:bg-gray-50 hover:border-blue-200 transition-colors"
-            >
-              ⛪ Bole
-            </button>
+          <div className="mt-8 min-h-[60px]">
+            {recentSearches.length > 0 ? (
+              // FIX: Changed from horizontal scroll to vertical flex-col
+              <div className="flex flex-col gap-3 pb-4">
+                <span className="text-gray-400 font-bold text-sm tracking-wider uppercase mb-1">
+                  Recent Searches
+                </span>
+                {recentSearches.map((search, idx) => (
+                  <button 
+                    key={idx}
+                    onClick={() => { 
+                      // Instantly load the map with the saved coordinates!
+                      setSearchQuery(search.name);
+                      setDestination({ name: search.name, lat: search.lat, lng: search.lng });
+                      setShowMap(true); 
+                    }}
+                    // FIX: Made the buttons w-full, added text-left, and removed the character limit
+                    className="w-full bg-white px-4 py-4 rounded-xl shadow-sm border border-gray-100 font-bold text-gray-700 flex items-center gap-3 hover:bg-gray-50 hover:border-black transition-colors text-left"
+                  >
+                    <span className="text-xl text-gray-400">🕒</span> 
+                    <span className="truncate text-lg">{search.name}</span>
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <div className="flex items-center justify-center p-4 rounded-xl border border-dashed border-gray-200 bg-gray-50/50">
+                <p className="text-gray-400 text-sm font-medium text-center">
+                  Search a destination above to start building your history.
+                </p>
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -371,19 +398,19 @@ export default function RideMap() {
   const isErrorStatus = requestStatus === 'No drivers available nearby.' || requestStatus === 'Your request is not accepted.' || requestStatus === 'No drivers responded in time.';
 
   return (
-    <div style={{ height: "100vh", width: "100vw", position: "relative", zIndex: 0 }}>
+    <div className="h-[100dvh] w-full relative z-0 overflow-hidden bg-gray-50">
       
       {/* SEARCH BAR LAYER (Top) */}
-      <div className="absolute top-4 left-12 w-full px-4 z-[1000]">
-        <div className="max-w-md mx-auto relative flex gap-2">
+      <div className="absolute top-4 left-16 right-4 z-[1000] pointer-events-none">
+        <div className="max-w-md mx-auto relative flex gap-2 pointer-events-auto">
           
           {/* Back Button to return to Welcome UI */}
           {!tripStatus && !destination && (
              <button 
                 onClick={() => { setShowMap(false); setSearchQuery(''); setSearchResults([]); }}
-                className="bg-white rounded-xl shadow-lg px-4 flex items-center justify-center hover:bg-gray-50 transition-colors border-2 border-transparent"
+                className="bg-white rounded-xl shadow-lg w-12 h-[56px] flex-shrink-0 flex items-center justify-center hover:bg-gray-50 transition-colors border border-gray-100"
              >
-               <span className="text-xl">←</span>
+               <span className="text-xl font-bold">←</span>
              </button>
           )}
 
@@ -393,7 +420,7 @@ export default function RideMap() {
               placeholder="Where to?" 
               value={searchQuery}
               onChange={handleSearch}
-              className="w-full bg-white rounded-xl shadow-lg pl-4 pr-5 py-4 text-lg font-bold border-2 border-transparent focus:border-black focus:outline-none transition-all"
+              className="min-w-0 w-full bg-white rounded-xl shadow-lg pl-4 pr-5 h-[56px] text-lg font-bold border border-transparent focus:border-black focus:outline-none transition-all"
             />
             
             {/* Search Results Dropdown */}
@@ -416,35 +443,37 @@ export default function RideMap() {
       </div>
 
       {/* MAP LAYER */}
-      <MapContainer center={position} zoom={14} style={{ height: "100%", width: "100%", zIndex: 10 }}>
-        <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
-        
-        {routePath.length > 0 && <Polyline positions={routePath} color="#3b82f6" weight={6} opacity={0.8} />}
+      <div className="absolute inset-0 z-10">
+        <MapContainer center={position} zoom={14} className="h-full w-full" zoomControl={false}>
+          <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
+          
+          {routePath.length > 0 && <Polyline positions={routePath} color="#3b82f6" weight={6} opacity={0.8} />}
 
-        <Marker position={position}>
-          <Popup>Your Pickup Location</Popup>
-        </Marker>
-
-        {destination && (
-          <Marker position={[destination.lat, destination.lng]} icon={destinationIcon}>
-            <Popup>{destination.name}</Popup>
+          <Marker position={position}>
+            <Popup>Your Pickup Location</Popup>
           </Marker>
-        )}
 
-        {liveDriverLocation ? (
-          <Marker position={liveDriverLocation} icon={carIcon}>
-            <Popup>Your Driver is Arriving!</Popup>
-          </Marker>
-        ) : (
-          drivers.map((driver) => (
-            <Marker key={driver.driver_id} position={[driver.latitude, driver.longitude]} icon={carIcon} />
-          ))
-        )}
-      </MapContainer>
+          {destination && (
+            <Marker position={[destination.lat, destination.lng]} icon={destinationIcon}>
+              <Popup>{destination.name}</Popup>
+            </Marker>
+          )}
+
+          {liveDriverLocation ? (
+            <Marker position={liveDriverLocation} icon={carIcon}>
+              <Popup>Your Driver is Arriving!</Popup>
+            </Marker>
+          ) : (
+            drivers.map((driver) => (
+              <Marker key={driver.driver_id} position={[driver.latitude, driver.longitude]} icon={carIcon} />
+            ))
+          )}
+        </MapContainer>
+      </div>
 
       {/* CHECKOUT LAYER (Bottom) */}
       {destination && (
-        <div className="absolute bottom-0 left-0 w-full p-4 z-[1000] pointer-events-none">
+        <div className="absolute bottom-0 left-0 w-full p-4 pb-8 z-[1000] pointer-events-none">
           <div className="max-w-md mx-auto bg-white rounded-2xl shadow-2xl overflow-hidden pointer-events-auto border border-gray-100 p-6">
             
             <h3 className="text-xl font-bold text-gray-900 mb-1">Ride to {destination.name}</h3>
