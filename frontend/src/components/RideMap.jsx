@@ -4,6 +4,7 @@ import 'leaflet/dist/leaflet.css';
 import L from 'leaflet';
 import { axiosInstance } from '../lib/axios';
 import { useSocketStore } from '../store/useSocketStore';
+import { useAuthStore } from '../store/useAuthStore'; // <-- NEW: Imported for greeting
 
 // --- VITE DEFAULT ICON FIX ---
 import icon from 'leaflet/dist/images/marker-icon.png';
@@ -26,6 +27,10 @@ const destinationIcon = new L.Icon({
 
 export default function RideMap() {
   const { socket } = useSocketStore();
+  const { authUser } = useAuthStore(); // Grab user for personalized greeting
+
+  // NEW: UI State to hide/show the map
+  const [showMap, setShowMap] = useState(false);
 
   const [drivers, setDrivers] = useState([]);
   const [isRequesting, setIsRequesting] = useState(false);
@@ -39,8 +44,6 @@ export default function RideMap() {
   const [liveDriverLocation, setLiveDriverLocation] = useState(null);
   const [currentTripId, setCurrentTripId] = useState(null); 
   const [tripStatus, setTripStatus] = useState(null); 
-
-  // <-- NEW: State to hold the driver's details! -->
   const [assignedDriver, setAssignedDriver] = useState(null);
 
   const [position, setPosition] = useState(null);
@@ -48,6 +51,11 @@ export default function RideMap() {
 
   const finalDriverLocation = useRef(null);
   const searchTimeoutRef = useRef(null);
+
+  // Dynamic Time-Based Greeting
+  const hour = new Date().getHours();
+  const greeting = hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening';
+  const firstName = authUser?.name?.split(' ')[0] || 'there';
 
   useEffect(() => {
     if (navigator.geolocation) {
@@ -66,7 +74,6 @@ export default function RideMap() {
 
   const fetchNearbyDrivers = async () => {
     if (liveDriverLocation || !position) return; 
-
     try {
       const res = await axiosInstance.get(`/drivers/nearby?latitude=${position[0]}&longitude=${position[1]}`);
       setDrivers(res.data.drivers || []);
@@ -82,7 +89,6 @@ export default function RideMap() {
     return () => clearInterval(interval); 
   }, [liveDriverLocation, position]); 
 
-  // Auto-timeout if driver ignores the request for 60 seconds
   useEffect(() => {
     let timeout;
     if (tripStatus === 'REQUESTED' && currentTripId) {
@@ -92,14 +98,12 @@ export default function RideMap() {
         } catch (error) {
           console.error("Auto-cancel failed on backend", error);
         }
-        
         setRequestStatus("No drivers responded in time.");
         setIsRequesting(false);
         setCurrentTripId(null);
         setTripStatus(null);
       }, 60000); 
     }
-
     return () => clearTimeout(timeout);
   }, [tripStatus, currentTripId]);
 
@@ -136,7 +140,8 @@ export default function RideMap() {
           setCurrentTripId(null);
           setTripStatus(null); 
           setRoutePath([]); 
-          setAssignedDriver(null); // <-- Clear driver details
+          setAssignedDriver(null);
+          setShowMap(false); // <-- NEW: Return to welcome screen on completion
         }, 100);
       }
       else if (data.status === "CANCELLED") {
@@ -163,14 +168,11 @@ export default function RideMap() {
     const getRouteAndFee = async () => {
       try {
         let start, end;
-        
         if (!tripStatus && destination) {
           start = position; end = [destination.lat, destination.lng];
-        } 
-        else if (tripStatus === 'ACCEPTED' && liveDriverLocation) {
+        } else if (tripStatus === 'ACCEPTED' && liveDriverLocation) {
           start = liveDriverLocation; end = position; 
-        } 
-        else if (tripStatus === 'IN_PROGRESS' && destination) {
+        } else if (tripStatus === 'IN_PROGRESS' && destination) {
           start = position; end = [destination.lat, destination.lng]; 
         } else {
           return;
@@ -193,36 +195,33 @@ export default function RideMap() {
         console.error("Routing error", error);
       }
     };
-
     getRouteAndFee();
   }, [tripStatus, liveDriverLocation, position, destination]);
 
-  const handleSearch = async (e) => {
-    const query = e.target.value;
-    setSearchQuery(query);
-
-    if (searchTimeoutRef.current) {
-      clearTimeout(searchTimeoutRef.current);
-    }
-    
+  // NEW: Extracted search logic so we can reuse it
+  const executeSearch = (query) => {
+    if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current);
     if (query.length < 3) {
       setSearchResults([]);
       return;
     }
-
     searchTimeoutRef.current = setTimeout(async () => {
       try {
         const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&limit=5&countrycodes=et&email=developer@rideapp.com`;
         const res = await fetch(url);
-        
         if (!res.ok) throw new Error("API rejected the request");
-        
         const data = await res.json();
         setSearchResults(data);
       } catch (error) {
         console.error("Search failed:", error);
       }
     }, 500);
+  };
+
+  const handleSearch = (e) => {
+    const query = e.target.value;
+    setSearchQuery(query);
+    executeSearch(query);
   };
 
   const handleSelectPlace = (place) => {
@@ -237,17 +236,13 @@ export default function RideMap() {
 
   const handleRequestRide = async () => {
     if (!destination) return;
-    
     if (drivers.length === 0) {
       setRequestStatus('No drivers available nearby.');
       return;
     }
-
     setIsRequesting(true);
     setRequestStatus('');
-
     const closestDriver = drivers[0]; 
-
     try {
       const payload = {
         driverId: closestDriver.driver_id,
@@ -257,13 +252,10 @@ export default function RideMap() {
         dropoffLng: destination.lng,
         fareEstimation: estimatedFee
       };
-
       const res = await axiosInstance.post('/trips/request', payload);
-      
       setCurrentTripId(res.data.trip.id); 
       setTripStatus('REQUESTED'); 
       setRequestStatus('Ride requested! Waiting for driver to accept...');
-      
     } catch (error) {
       setRequestStatus(error.response?.data?.message || 'Failed to request ride');
       setIsRequesting(false);
@@ -278,7 +270,6 @@ export default function RideMap() {
         console.error("Failed to cancel trip on backend", error);
       }
     }
-    
     setDestination(null);
     setSearchQuery('');
     setRequestStatus('');
@@ -287,50 +278,140 @@ export default function RideMap() {
     setCurrentTripId(null);
     setTripStatus(null);
     setRoutePath([]);
-    setAssignedDriver(null); // <-- Clear driver details
+    setAssignedDriver(null);
   };
 
+  // ==========================================
+  // 1. WELCOME OVERLAY (Hides map initially)
+  // ==========================================
+  if (!showMap) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex flex-col pt-32 px-6 relative overflow-hidden">
+        {/* Ambient Glows */}
+        <div className="absolute top-[-10%] left-[-10%] w-72 h-72 bg-blue-300 rounded-full mix-blend-multiply filter blur-3xl opacity-40"></div>
+        <div className="absolute top-[20%] right-[-10%] w-72 h-72 bg-purple-300 rounded-full mix-blend-multiply filter blur-3xl opacity-40"></div>
+
+        <div className="relative z-10 max-w-md mx-auto w-full">
+          <h1 className="text-4xl font-black text-gray-900 tracking-tight mb-2">
+            {greeting}, <br/>
+            <span className="text-blue-600">{firstName}</span>
+          </h1>
+          <p className="text-gray-500 text-lg mb-10 font-medium">Where are we heading today?</p>
+
+          <form 
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (searchQuery.trim()) {
+                setShowMap(true);
+                executeSearch(searchQuery);
+              }
+            }} 
+            className="bg-white p-3 rounded-2xl shadow-xl border border-gray-100 flex items-center gap-3 focus-within:ring-2 focus-within:ring-blue-500 transition-all"
+          >
+            <div className="w-12 h-12 bg-gray-100 rounded-full flex items-center justify-center text-xl shadow-inner flex-shrink-0">
+              📍
+            </div>
+            <input 
+              type="text"
+              placeholder="Search destination..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="flex-grow text-gray-900 font-bold text-lg bg-transparent border-none focus:outline-none placeholder-gray-400"
+            />
+            <button 
+              type="submit" 
+              disabled={!searchQuery.trim()} 
+              className="bg-black text-white px-5 py-3 rounded-xl font-bold disabled:bg-gray-300 disabled:text-gray-500 hover:bg-gray-800 transition-colors"
+            >
+              Search
+            </button>
+          </form>
+
+          <div className="mt-8 flex gap-4 overflow-x-auto pb-4" style={{ scrollbarWidth: 'none' }}>
+            <button 
+              onClick={() => { setSearchQuery('Bole Airport'); setShowMap(true); executeSearch('Bole Airport'); }}
+              className="flex-shrink-0 bg-white px-5 py-3 rounded-xl shadow-sm border border-gray-100 font-bold text-gray-700 flex items-center gap-2 hover:bg-gray-50 hover:border-blue-200 transition-colors"
+            >
+              ✈️ Airport
+            </button>
+            <button 
+              onClick={() => { setSearchQuery('Piassa'); setShowMap(true); executeSearch('Piassa'); }}
+              className="flex-shrink-0 bg-white px-5 py-3 rounded-xl shadow-sm border border-gray-100 font-bold text-gray-700 flex items-center gap-2 hover:bg-gray-50 hover:border-blue-200 transition-colors"
+            >
+              🏛️ Piassa
+            </button>
+            <button 
+              onClick={() => { setSearchQuery('Bole Medhanialem'); setShowMap(true); executeSearch('Bole Medhanialem'); }}
+              className="flex-shrink-0 bg-white px-5 py-3 rounded-xl shadow-sm border border-gray-100 font-bold text-gray-700 flex items-center gap-2 hover:bg-gray-50 hover:border-blue-200 transition-colors"
+            >
+              ⛪ Bole
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ==========================================
+  // 2. GPS LOADING SCREEN
+  // ==========================================
   if (!position) {
     return (
       <div className="flex h-screen w-screen items-center justify-center bg-gray-50 flex-col">
         <div className="h-12 w-12 animate-spin rounded-full border-b-4 border-black mb-4"></div>
-        <h2 className="font-bold text-gray-700">Finding your location...</h2>
+        <h2 className="font-bold text-gray-700">Locating you on the map...</h2>
         <p className="text-sm text-gray-500">Please allow location access in your browser.</p>
       </div>
     );
   }
 
+  // ==========================================
+  // 3. FULL MAP UI (Revealed after search)
+  // ==========================================
   const isErrorStatus = requestStatus === 'No drivers available nearby.' || requestStatus === 'Your request is not accepted.' || requestStatus === 'No drivers responded in time.';
 
   return (
     <div style={{ height: "100vh", width: "100vw", position: "relative", zIndex: 0 }}>
-    
+      
       {/* SEARCH BAR LAYER (Top) */}
       <div className="absolute top-4 left-12 w-full px-4 z-[1000]">
-        <div className="max-w-md mx-auto relative">
-          <input 
-            type="text" 
-            placeholder="Where to?" 
-            value={searchQuery}
-            onChange={handleSearch}
-            className="w-full bg-white rounded-xl shadow-lg pl-4 pr-5 py-4 text-lg font-bold border-2 border-transparent focus:border-black focus:outline-none transition-all"
-          />
+        <div className="max-w-md mx-auto relative flex gap-2">
           
-          {/* Search Results Dropdown */}
-          {searchResults.length > 0 && (
-            <div className="absolute top-full mt-2 w-full bg-white rounded-xl shadow-xl overflow-hidden border border-gray-100">
-              {searchResults.map((place) => (
-                <div 
-                  key={place.place_id}
-                  onClick={() => handleSelectPlace(place)}
-                  className="px-5 py-3 hover:bg-gray-50 cursor-pointer border-b border-gray-100 last:border-0"
-                >
-                  <p className="font-bold text-gray-900 truncate">{place.display_name.split(',')[0]}</p>
-                  <p className="text-xs text-gray-500 truncate">{place.display_name}</p>
-                </div>
-              ))}
-            </div>
+          {/* Back Button to return to Welcome UI */}
+          {!tripStatus && !destination && (
+             <button 
+                onClick={() => { setShowMap(false); setSearchQuery(''); setSearchResults([]); }}
+                className="bg-white rounded-xl shadow-lg px-4 flex items-center justify-center hover:bg-gray-50 transition-colors border-2 border-transparent"
+             >
+               <span className="text-xl">←</span>
+             </button>
           )}
+
+          <div className="flex-grow relative">
+            <input 
+              type="text" 
+              placeholder="Where to?" 
+              value={searchQuery}
+              onChange={handleSearch}
+              className="w-full bg-white rounded-xl shadow-lg pl-4 pr-5 py-4 text-lg font-bold border-2 border-transparent focus:border-black focus:outline-none transition-all"
+            />
+            
+            {/* Search Results Dropdown */}
+            {searchResults.length > 0 && (
+              <div className="absolute top-full mt-2 w-full bg-white rounded-xl shadow-xl overflow-hidden border border-gray-100">
+                {searchResults.map((place) => (
+                  <div 
+                    key={place.place_id}
+                    onClick={() => handleSelectPlace(place)}
+                    className="px-5 py-3 hover:bg-gray-50 cursor-pointer border-b border-gray-100 last:border-0"
+                  >
+                    <p className="font-bold text-gray-900 truncate">{place.display_name.split(',')[0]}</p>
+                    <p className="text-xs text-gray-500 truncate">{place.display_name}</p>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
       </div>
 
@@ -379,7 +460,6 @@ export default function RideMap() {
                   <div className="h-8 w-8 animate-spin rounded-full border-b-4 border-black mb-3 mx-auto"></div>
                 )}
                 
-                {/* <-- NEW: Driver Profile Card (Replaces the bouncy car emoji) --> */}
                 {(tripStatus === 'ACCEPTED' || tripStatus === 'IN_PROGRESS') && assignedDriver ? (
                   <div className="w-full bg-white rounded-xl p-4 mb-4 border border-gray-100 flex items-center justify-between text-left shadow-sm">
                     <div className="flex items-center gap-3">
