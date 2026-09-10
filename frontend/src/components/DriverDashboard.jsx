@@ -44,12 +44,12 @@ export default function DriverDashboard() {
   const [routePath, setRoutePath] = useState([]);
   const [routeIndex, setRouteIndex] = useState(0);
 
-  // NEW: Online/Offline State
+  // Online/Offline State
   const [isOnline, setIsOnline] = useState(() => {
     return localStorage.getItem("driverIsOnline") === "true";
   });
 
-  // NEW: Toggle Function to communicate with backend
+  // Toggle Function to communicate with backend
   const handleToggleStatus = () => {
     const newStatus = !isOnline;
     setIsOnline(newStatus);
@@ -59,15 +59,15 @@ export default function DriverDashboard() {
   };
 
   // 1. Save to browser memory every time they toggle
-useEffect(() => {
-  localStorage.setItem("driverIsOnline", isOnline);
-}, [isOnline]);
+  useEffect(() => {
+    localStorage.setItem("driverIsOnline", isOnline);
+  }, [isOnline]);
 
-useEffect(() => {
-  if (socket && isOnline) {
-    socket.emit("toggle_status", { isOnline: true });
-  }
-}, [socket]);
+  useEffect(() => {
+    if (socket && isOnline) {
+      socket.emit("toggle_status", { isOnline: true });
+    }
+  }, [socket, isOnline]);
 
   useEffect(() => {
     if (navigator.geolocation) {
@@ -84,9 +84,10 @@ useEffect(() => {
     }
   }, []);
 
-  // UPDATED: Constantly emit idle location ONLY if isOnline is true!
+  // UPDATED: Constantly emit idle location ONLY if isOnline is true AND approved!
   useEffect(() => {
-    if (!socket || activeTrip || !currentLocation || !isOnline) return; 
+    // FIX: Added authUser?.status === 'REJECTED' alongside 'PENDING' to the escape hatch
+    if (!socket || activeTrip || !currentLocation || !isOnline || authUser?.status === 'PENDING' || authUser?.status === 'REJECTED') return; 
 
     // Immediately emit location when going online
     socket.emit("update_location", {
@@ -103,7 +104,7 @@ useEffect(() => {
     }, 5000);
 
     return () => clearInterval(interval);
-  }, [socket, activeTrip, currentLocation, isOnline]); // <-- Added isOnline dependency
+  }, [socket, activeTrip, currentLocation, isOnline, authUser]);
 
   // Listen for new rides AND cancellations
   useEffect(() => {
@@ -297,6 +298,64 @@ useEffect(() => {
 
   const displayTrip = incomingRide || activeTrip;
 
+  // The Remote Waiting Room 
+  if (authUser?.status === 'PENDING') {
+    return (
+      <div className="flex h-screen w-screen items-center justify-center bg-gray-100 p-4">
+        <div className="max-w-md w-full bg-white rounded-2xl shadow-xl p-8 text-center border-t-4 border-blue-500">
+          <div className="text-6xl mb-4 animate-pulse">📄</div>
+          <h2 className="text-2xl font-bold text-gray-900 mb-2">Verifying Documents</h2>
+          <p className="text-gray-600 mb-6">
+            We have received your Application. Our team is currently reviewing them.
+          </p>
+          
+          <div className="bg-blue-50 rounded-lg p-5 text-sm text-blue-800 text-left border border-blue-100">
+            <p className="font-bold mb-1">What happens next?</p>
+            <p>Reviews typically take 1-2 days during business days. Once approved, this screen will automatically turn into your live map, and you can start accepting rides!</p>
+          </div>
+
+          <button 
+            onClick={() => window.location.reload()} 
+            className="mt-6 w-full bg-blue-600 text-white py-4 rounded-xl font-bold hover:bg-blue-700 transition-colors shadow-md"
+          >
+            Check Status Again
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // NEW: The Rejected Screen
+  if (authUser?.status === 'REJECTED') {
+    return (
+      <div className="flex h-screen w-screen items-center justify-center bg-gray-100 p-4">
+        <div className="max-w-md w-full bg-white rounded-2xl shadow-xl p-8 text-center border-t-4 border-red-500">
+          <div className="text-6xl mb-4">❌</div>
+          <h2 className="text-2xl font-bold text-gray-900 mb-2">Application Declined</h2>
+          <p className="text-gray-600 mb-6">
+            Unfortunately, our team was unable to approve your driver application at this time.
+          </p>
+          
+          <div className="bg-red-50 rounded-lg p-5 text-sm text-red-800 text-left border border-red-100 mb-6">
+            <p className="font-bold mb-1">Common reasons for decline:</p>
+            <ul className="list-disc ml-5 space-y-1">
+              <li>Documents were blurry or unreadable.</li>
+              <li>The Driver's License was expired.</li>
+              <li>Vehicle details did not match the Libre.</li>
+            </ul>
+          </div>
+
+          <button 
+            onClick={() => window.location.href = "mailto:support@rideapp.com"} 
+            className="w-full bg-gray-900 text-white py-4 rounded-xl font-bold hover:bg-gray-800 transition-colors shadow-md"
+          >
+            Contact Support
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   if (!currentLocation) {
     return (
       <div className="flex h-screen w-screen items-center justify-center bg-black flex-col">
@@ -310,7 +369,7 @@ useEffect(() => {
   return (
     <div style={{ height: "100vh", width: "100vw", position: "relative", zIndex: 0 }}>
       
-      {/* UPDATED: INTERACTIVE DRIVER STATUS BAR (Click to Toggle) */}
+      {/* INTERACTIVE DRIVER STATUS BAR (Click to Toggle) */}
       <div className="absolute top-4 left-0 w-full px-4 z-[1000]">
         <div 
           onClick={handleToggleStatus}

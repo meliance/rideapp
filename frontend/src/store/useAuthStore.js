@@ -29,15 +29,25 @@ export const useAuthStore = create((set) => ({
     }
   },
 
-  // FIX: Removed the duplicate signup function and added the success/fail signals
   signup: async (userData) => {
     try {
       const res = await axiosInstance.post('/auth/signup', userData);
       set({ authUser: res.data }); 
-      return true; // <-- NEW: Tells the component to safely redirect
+      return true;
     } catch (error) {
       alert(error.response?.data?.message || "Signup failed");
-      return false; // <-- NEW: Tells the component to stop and stay on the form
+      return false;
+    }
+  },
+
+  driverSignup: async (userData) => {
+    try {
+      const res = await axiosInstance.post('/auth/driver/signup', userData);
+      set({ authUser: res.data }); 
+      return true; 
+    } catch (error) {
+      alert(error.response?.data?.message || "Driver signup failed");
+      return false; 
     }
   },
 

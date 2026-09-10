@@ -18,6 +18,17 @@ export default function Signup() {
 
   return (
     <div className="flex flex-col items-center justify-center min-h-screen bg-gray-900 text-white p-4">
+      
+      {/* NEW: Driver Registration Link */}
+      <div className="w-full max-w-md flex justify-end mb-4">
+        <Link 
+          to="/driver/signup" 
+          className="text-sm text-blue-400 hover:text-blue-300 border border-blue-400 hover:bg-blue-400/10 px-4 py-2 rounded-full transition-colors font-medium"
+        >
+          Want to register as a driver?
+        </Link>
+      </div>
+
       <div className="w-full max-w-md bg-gray-800 p-8 rounded-lg shadow-lg">
         <h2 className="text-2xl font-bold text-center mb-6">Passenger Sign Up</h2>
         
@@ -28,7 +39,6 @@ export default function Signup() {
             onChange={(e) => setFormData({...formData, name: e.target.value})}
           />
           
-          {/* UPDATED: Flexbox container for static country code */}
           <div className="flex items-center bg-gray-700 rounded focus-within:ring-2 focus-within:ring-blue-500 overflow-hidden transition-all">
             <span className="pl-4 pr-3 text-gray-400 font-bold border-r border-gray-600 select-none">
               +251
