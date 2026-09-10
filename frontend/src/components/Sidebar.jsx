@@ -16,7 +16,8 @@ export default function Sidebar() {
   const { socket } = useSocketStore();
 
   useEffect(() => {
-    if (authUser?.activeRole !== 'driver') return;
+    // FIX: Stop fetching earnings if they are not an APPROVED driver
+    if (authUser?.activeRole !== 'driver' || authUser?.status !== 'APPROVED') return;
 
     const fetchEarnings = async () => {
       try {
