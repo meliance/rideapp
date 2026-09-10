@@ -257,22 +257,26 @@ export default function RideMap() {
       setRequestStatus('No drivers available nearby.');
       return;
     }
+
     setIsRequesting(true);
     setRequestStatus('');
-    const closestDriver = drivers[0]; 
+    
     try {
       const payload = {
-        driverId: closestDriver.driver_id,
+        // FIX: Extract all driver IDs into an array instead of picking just one!
+        driverIds: drivers.map(d => d.driver_id),
         pickupLat: position[0],
         pickupLng: position[1],
         dropoffLat: destination.lat,
         dropoffLng: destination.lng,
         fareEstimation: estimatedFee
       };
+
       const res = await axiosInstance.post('/trips/request', payload);
       setCurrentTripId(res.data.trip.id); 
       setTripStatus('REQUESTED'); 
-      setRequestStatus('Ride requested! Waiting for driver to accept...');
+      setRequestStatus('Request broadcasted! Waiting for a driver to accept...');
+      
     } catch (error) {
       setRequestStatus(error.response?.data?.message || 'Failed to request ride');
       setIsRequesting(false);
