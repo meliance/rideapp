@@ -21,9 +21,11 @@ export const getAdminStats = async (req, res) => {
 // 2. Fetch drivers waiting for approval
 export const getPendingDrivers = async (req, res) => {
   try {
+    // FIX: Added dp.license_image_url and dp.libre_image_url to the SELECT query
     const query = `
       SELECT u.id as user_id, u.name, u.phone_number, u.profile_pic, 
-             dp.vehicle_make, dp.vehicle_model, dp.license_plate
+             dp.vehicle_make, dp.vehicle_model, dp.license_plate,
+             dp.license_image_url, dp.libre_image_url
       FROM users u
       JOIN driver_profiles dp ON u.id = dp.user_id
       WHERE dp.approval_status = 'PENDING'

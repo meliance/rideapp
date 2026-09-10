@@ -91,7 +91,7 @@ export const respondToTrip = async (req, res) => {
   try {
     const driverId = req.user.id;
     const { tripId } = req.params;
-    const { status, finalFare } = req.body; // <-- FIX: Added finalFare to destructured body
+    const { status, finalFare } = req.body;
 
     if (!["ACCEPTED", "CANCELLED", "IN_PROGRESS", "COMPLETED"].includes(status)) {
       return res.status(400).json({ message: "Invalid status provided." });

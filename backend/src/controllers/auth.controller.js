@@ -61,31 +61,29 @@ export const signup = async (req, res) => {
 
 // 2. FIRST-TIME DRIVER SIGNUP
 export const driverSignup = async (req, res) => {
-  const { name, phoneNumber, password, vehicleMake, vehicleModel, licensePlate } = req.body;
+  // FIX 1: Extract licenseImage and libreImage from req.body
+  const { name, phoneNumber, password, vehicleMake, vehicleModel, licensePlate, licenseImage, libreImage } = req.body;
   
   let client;
   
   try {
-    if (!name || !phoneNumber || !password || !vehicleMake || !vehicleModel || !licensePlate) {
-      return res.status(400).json({ message: "All fields are required" });
+    // FIX 2: Require the images in the validation check
+    if (!name || !phoneNumber || !password || !vehicleMake || !vehicleModel || !licensePlate || !licenseImage || !libreImage) {
+      return res.status(400).json({ message: "All fields and document uploads are required" });
     }
 
-    // FIX: Enforce Ethiopian phone number format for drivers too
     if (!/^[79]\d{8}$/.test(phoneNumber)) {
       return res.status(400).json({ message: "Phone number must start with 7 or 9 and be exactly 9 digits long" });
     }
 
-    // FIX: Password length validation for drivers
     if (password.length < 4) {
       return res.status(400).json({ message: "Password must be at least 4 characters long" });
     }
 
-    // FIX: Programmatically add the +251 country code
     const formattedPhone = `+251${phoneNumber}`;
 
     client = await pool.connect();
 
-    // Use formattedPhone for the database check
     const userExists = await client.query('SELECT id FROM users WHERE phone_number = $1', [formattedPhone]);
     if (userExists.rows.length > 0) {
       return res.status(400).json({ message: "Phone number already exists. Please log in to upgrade to a driver account." });
@@ -96,24 +94,23 @@ export const driverSignup = async (req, res) => {
 
     await client.query('BEGIN');
 
-    // Use formattedPhone for the database insert
     const userResult = await client.query(
       `INSERT INTO users (name, phone_number, password_hash) VALUES ($1, $2, $3) RETURNING id, name, phone_number`,
       [name, formattedPhone, hashedPassword]
     );
     const newUserId = userResult.rows[0].id;
 
+    // FIX 3: Insert the image URLs into the driver_profiles table
     const driverResult = await client.query(
-      `INSERT INTO driver_profiles (user_id, vehicle_make, vehicle_model, license_plate) 
-       VALUES ($1, $2, $3, $4) 
+      `INSERT INTO driver_profiles (user_id, vehicle_make, vehicle_model, license_plate, license_image_url, libre_image_url) 
+       VALUES ($1, $2, $3, $4, $5, $6) 
        RETURNING vehicle_make, license_plate, approval_status`,
-      [newUserId, vehicleMake, vehicleModel, licensePlate]
+      [newUserId, vehicleMake, vehicleModel, licensePlate, licenseImage, libreImage]
     );
 
     await client.query('COMMIT');
     const newDriver = driverResult.rows[0];
 
-    // DRIVERS GET PERSISTENT COOKIES (isSessionOnly = false)
     generateToken(newUserId, "driver", res, false);
 
     res.status(201).json({
@@ -267,36 +264,45 @@ export const upgradeToDriver = async (req, res) => {
 
 export const checkAuth = async (req, res) => {
   try {
+    // req.userId comes from your protectRoute middleware
+    const userId = req.user.id; 
+
+    // FIX: Use a LEFT JOIN to fetch the approval_status from driver_profiles
     const query = `
-      SELECT u.id, u.name, u.phone_number, u.profile_pic, u.is_admin,
-             dp.approval_status
+      SELECT 
+        u.id, u.name, u.phone_number, u.profile_pic,
+        dp.approval_status, dp.vehicle_make, dp.license_plate
       FROM users u
       LEFT JOIN driver_profiles dp ON u.id = dp.user_id
       WHERE u.id = $1
     `;
     
-    const result = await pool.query(query, [req.user.id]);
-    const account = result.rows[0];
+    const result = await pool.query(query, [userId]);
+    const user = result.rows[0];
 
-    if (!account) {
+    if (!user) {
       return res.status(404).json({ message: "User not found" });
     }
 
-    const roles = ["rider"];
-    const isDriver = account.approval_status !== null;
-    if (isDriver) roles.push("driver");
-
-    const calculatedRole = roles.includes("driver") ? "driver" : "rider";
+    // Determine roles based on whether a driver profile exists
+    const roles = user.approval_status ? ["rider", "driver"] : ["rider"];
+    const activeRole = user.approval_status ? "driver" : "rider";
 
     res.status(200).json({
-      id: account.id,
-      name: account.name,
-      phoneNumber: account.phone_number,
-      profilePic: account.profile_pic,
+      id: user.id,
+      name: user.name,
+      phoneNumber: user.phone_number,
+      profilePic: user.profile_pic,
+      
+      status: user.approval_status, 
+      
+      vehicle: user.vehicle_make ? { 
+        make: user.vehicle_make, 
+        plate: user.license_plate 
+      } : null,
       roles: roles,
-      activeRole: calculatedRole,
-      driverStatus: account.approval_status,
-      isAdmin: account.is_admin || false 
+      activeRole: activeRole,
+      isAdmin: false
     });
   } catch (error) {
     console.error("Error in checkAuth:", error);
