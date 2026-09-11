@@ -86,7 +86,6 @@ export default function DriverDashboard() {
 
   // UPDATED: Constantly emit idle location ONLY if isOnline is true AND approved!
   useEffect(() => {
-    // FIX: Added authUser?.status === 'REJECTED' alongside 'PENDING' to the escape hatch
     if (!socket || activeTrip || !currentLocation || !isOnline || authUser?.status === 'PENDING' || authUser?.status === 'REJECTED') return; 
 
     // Immediately emit location when going online
@@ -124,12 +123,27 @@ export default function DriverDashboard() {
       setRoutePath([]); 
     };
 
+    // FIX: Listen for when another driver claims the ride, or the passenger cancels it before anyone accepts
+    const handleTripClaimedByOther = (data) => {
+      // Check if the ID in state matches the ID that was just claimed/cancelled
+      setIncomingRide((currentIncoming) => {
+        if (currentIncoming && currentIncoming.tripId === data.tripId) {
+          return null; // Hide the popup!
+        }
+        return currentIncoming;
+      });
+    };
+
     socket.on("new_ride_request", handleNewRide);
     socket.on("trip_cancelled", handleCancellation); 
+    
+    // You might emit "trip_claimed" from the backend, but we'll use trip_cancelled as a generic fallback too
+    socket.on("trip_claimed", handleTripClaimedByOther);
 
     return () => {
       socket.off("new_ride_request", handleNewRide);
       socket.off("trip_cancelled", handleCancellation); 
+      socket.off("trip_claimed", handleTripClaimedByOther);
     };
   }, [socket]);
 
@@ -238,6 +252,9 @@ export default function DriverDashboard() {
       setIncomingRide(null); 
     } catch (error) {
       alert("Failed to accept ride: " + (error.response?.data?.message || error.message));
+      
+      // FIX: Clear the screen so they can get new rides!
+      setIncomingRide(null); 
     } finally {
       setIsAccepting(false);
     }
@@ -367,10 +384,10 @@ export default function DriverDashboard() {
   }
 
   return (
-    <div style={{ height: "100vh", width: "100vw", position: "relative", zIndex: 0 }}>
+    <div className="h-[100dvh] w-full relative z-0 overflow-hidden bg-gray-50">
       
       {/* INTERACTIVE DRIVER STATUS BAR (Click to Toggle) */}
-      <div className="absolute top-4 left-0 w-full px-4 z-[1000]">
+      <div className="absolute top-4 left-16 right-4 z-[1000]">
         <div 
           onClick={handleToggleStatus}
           className={`max-w-md mx-auto rounded-xl shadow-lg px-5 py-4 flex justify-between items-center cursor-pointer transition-colors border-2 ${
@@ -387,30 +404,32 @@ export default function DriverDashboard() {
         </div>
       </div>
 
-      <MapContainer center={currentLocation} zoom={14} style={{ height: "100%", width: "100%", zIndex: 10 }}>
-        <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
-        
-        {routePath.length > 0 && <Polyline positions={routePath} color="#3b82f6" weight={6} opacity={0.8} />}
+      <div className="absolute inset-0 z-10">
+        <MapContainer center={currentLocation} zoom={14} className="h-full w-full" zoomControl={false}>
+          <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
+          
+          {routePath.length > 0 && <Polyline positions={routePath} color="#3b82f6" weight={6} opacity={0.8} />}
 
-        <Marker position={currentLocation}>
-          <Popup>Your Vehicle</Popup>
-        </Marker>
+          <Marker position={currentLocation}>
+            <Popup>Your Vehicle</Popup>
+          </Marker>
 
-        {displayTrip && (
-          <>
-            <Marker position={[displayTrip.pickup.lat, displayTrip.pickup.lng]} icon={pickupIcon}>
-              <Popup>Passenger Pickup</Popup>
-            </Marker>
-            <Marker position={[displayTrip.dropoff.lat, displayTrip.dropoff.lng]} icon={dropoffIcon}>
-              <Popup>Destination</Popup>
-            </Marker>
-          </>
-        )}
-      </MapContainer>
+          {displayTrip && (
+            <>
+              <Marker position={[displayTrip.pickup.lat, displayTrip.pickup.lng]} icon={pickupIcon}>
+                <Popup>Passenger Pickup</Popup>
+              </Marker>
+              <Marker position={[displayTrip.dropoff.lat, displayTrip.dropoff.lng]} icon={dropoffIcon}>
+                <Popup>Destination</Popup>
+              </Marker>
+            </>
+          )}
+        </MapContainer>
+      </div>
 
       {/* INCOMING RIDE OVERLAY */}
       {incomingRide && (
-        <div className="absolute bottom-0 left-0 w-full p-4 z-[1000]">
+        <div className="absolute bottom-0 left-0 w-full p-4 pb-8 z-[1000]">
           <div className="max-w-md mx-auto bg-white rounded-2xl shadow-2xl overflow-hidden border-2 border-black p-6">
             <div className="flex justify-between items-center border-b border-gray-100 pb-4 mb-4">
               <div className="flex items-center gap-3">
@@ -458,10 +477,8 @@ export default function DriverDashboard() {
           </div>
         </div>
       )}
-
-      {/* ACTIVE TRIP OVERLAY */}
       {activeTrip && (
-        <div className="absolute bottom-0 left-0 w-full p-4 z-[1000]">
+        <div className="absolute bottom-0 left-0 w-full p-4 pb-8 z-[1000]">
           <div className="max-w-md mx-auto bg-black text-white rounded-2xl shadow-2xl overflow-hidden p-6 border-t-4 border-green-500">
             
             <h3 className="font-bold text-xl mb-1 text-green-400">
@@ -472,8 +489,20 @@ export default function DriverDashboard() {
             </p>
             
             <div className="flex justify-between items-center border-t border-gray-700 pt-4 mb-4">
-              <span>{activeTrip.passenger?.name}</span>
-              <span className="font-bold text-gray-400 text-sm">Dynamic Fare</span>
+              <span className="font-bold text-lg">{activeTrip.passenger?.name}</span>
+              
+              {/* FIX: Show Call button while EN_ROUTE, show Dynamic Fare when IN_PROGRESS */}
+              {tripStatus === "EN_ROUTE" && activeTrip.passenger?.phoneNumber ? (
+                <a 
+                  href={`tel:${activeTrip.passenger.phoneNumber}`} 
+                  className="bg-green-900 text-green-400 w-10 h-10 rounded-full flex items-center justify-center border border-green-700 hover:bg-green-800 transition-colors shadow-sm"
+                  title="Call Passenger"
+                >
+                  📞
+                </a>
+              ) : (
+                <span className="font-bold text-gray-400 text-sm">Dynamic Fare</span>
+              )}
             </div>
 
             {tripStatus === "EN_ROUTE" ? (
