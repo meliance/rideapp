@@ -197,50 +197,27 @@ export default function DriverDashboard() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTrip, tripStatus]); 
 
-  // Simulate driving along the ACTUAL roads
+ // REAL-TIME GPS TRACKER
   useEffect(() => {
-    if (!activeTrip) return;
+    if (navigator.geolocation) {
+      // watchPosition continuously fires every time the phone physically moves
+      const watchId = navigator.geolocation.watchPosition(
+        (pos) => {
+          setCurrentLocation([pos.coords.latitude, pos.coords.longitude]);
+        },
+        (err) => {
+          console.warn("GPS failed, using fallback.", err);
+          setCurrentLocation((prev) => prev || [9.0310, 38.7410]); 
+        },
+        // enableHighAccuracy forces the phone to use GPS satellites instead of cell towers
+        { enableHighAccuracy: true, maximumAge: 5000, timeout: 10000 } 
+      );
 
-    const interval = setInterval(() => {
-      if (routePath.length > 0) {
-        setRouteIndex((prevIndex) => {
-          const step = Math.max(1, Math.floor(routePath.length / 15)); 
-          const nextIndex = prevIndex + step;
-          
-          if (nextIndex >= routePath.length) {
-            const finalCoords = routePath[routePath.length - 1];
-            setCurrentLocation(finalCoords);
-            socket?.emit("update_location", { latitude: finalCoords[0], longitude: finalCoords[1], passengerId: activeTrip.passenger.id });
-            return routePath.length;
-          }
-
-          const nextCoords = routePath[nextIndex];
-          setCurrentLocation(nextCoords);
-          socket?.emit("update_location", { latitude: nextCoords[0], longitude: nextCoords[1], passengerId: activeTrip.passenger.id });
-          return nextIndex;
-        });
-      } else {
-        // Fallback straight-line
-        setCurrentLocation((prev) => {
-          const targetLat = tripStatus === "EN_ROUTE" ? activeTrip.pickup.lat : activeTrip.dropoff.lat;
-          const targetLng = tripStatus === "EN_ROUTE" ? activeTrip.pickup.lng : activeTrip.dropoff.lng;
-          
-          const newLat = prev[0] + (targetLat - prev[0]) * 0.05;
-          const newLng = prev[1] + (targetLng - prev[1]) * 0.05;
-          
-          socket?.emit("update_location", {
-            latitude: newLat,
-            longitude: newLng,
-            passengerId: activeTrip.passenger.id
-          });
-          
-          return [newLat, newLng];
-        });
-      }
-    }, 2000); 
-
-    return () => clearInterval(interval);
-  }, [activeTrip, tripStatus, routePath, socket]);
+      return () => navigator.geolocation.clearWatch(watchId);
+    } else {
+      setCurrentLocation([9.0310, 38.7410]);
+    }
+  }, []);
 
   // Accept Ride Handler
   const handleAccept = async () => {

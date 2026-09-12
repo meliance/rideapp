@@ -65,16 +65,21 @@ export default function RideMap() {
   const greeting = hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening';
   const firstName = authUser?.name?.split(' ')[0] || 'there';
 
+  // REAL-TIME GPS TRACKER
   useEffect(() => {
     if (navigator.geolocation) {
-      navigator.geolocation.getCurrentPosition(
-        (pos) => setPosition([pos.coords.latitude, pos.coords.longitude]),
-        (err) => {
-          console.warn("GPS failed, using Piassa fallback.", err);
-          setPosition([9.0300, 38.7400]);
+      const watchId = navigator.geolocation.watchPosition(
+        (pos) => {
+          setPosition([pos.coords.latitude, pos.coords.longitude]);
         },
-        { enableHighAccuracy: true }
+        (err) => {
+          console.warn("GPS failed, using fallback.", err);
+          setPosition((prev) => prev || [9.0300, 38.7400]);
+        },
+        { enableHighAccuracy: true, maximumAge: 5000, timeout: 10000 }
       );
+
+      return () => navigator.geolocation.clearWatch(watchId);
     } else {
       setPosition([9.0300, 38.7400]);
     }
