@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { MapContainer, TileLayer, Marker, Popup, Polyline } from 'react-leaflet';
 import 'leaflet/dist/leaflet.css';
 import L from 'leaflet';
@@ -40,16 +40,36 @@ export default function DriverDashboard() {
 
   const [tripStatus, setTripStatus] = useState("EN_ROUTE");
   const [isUpdating, setIsUpdating] = useState(false);
+  const [liveEta, setLiveEta] = useState(null);
 
   const [routePath, setRoutePath] = useState([]);
   const [routeIndex, setRouteIndex] = useState(0);
+
+  // NEW: Audio player reference and helper function
+  const ringAudio = useRef(typeof Audio !== "undefined" ? new Audio('/ringtone.mp3') : null);
+
+  const stopRing = () => {
+    if (ringAudio.current) {
+      ringAudio.current.pause();
+      ringAudio.current.currentTime = 0;
+    }
+  };
+
+  useEffect(() => {
+    if (incomingRide) {
+      const timer = setTimeout(() => {
+        setIncomingRide(null);
+        stopRing();
+      }, 60000); // Exactly 60 seconds
+      return () => clearTimeout(timer);
+    }
+  }, [incomingRide]);
 
   // Online/Offline State
   const [isOnline, setIsOnline] = useState(() => {
     return localStorage.getItem("driverIsOnline") === "true";
   });
 
-  // Toggle Function to communicate with backend
   const handleToggleStatus = () => {
     const newStatus = !isOnline;
     setIsOnline(newStatus);
@@ -58,7 +78,6 @@ export default function DriverDashboard() {
     }
   };
 
-  // 1. Save to browser memory every time they toggle
   useEffect(() => {
     localStorage.setItem("driverIsOnline", isOnline);
   }, [isOnline]);
@@ -70,50 +89,36 @@ export default function DriverDashboard() {
   }, [socket, isOnline]);
 
   useEffect(() => {
-    if (navigator.geolocation) {
-      navigator.geolocation.getCurrentPosition(
-        (pos) => setCurrentLocation([pos.coords.latitude, pos.coords.longitude]),
-        (err) => {
-          console.warn("GPS failed, using fallback.", err);
-          setCurrentLocation([9.0310, 38.7410]); // Piassa fallback
-        },
-        { enableHighAccuracy: true }
-      );
-    } else {
-      setCurrentLocation([9.0310, 38.7410]);
-    }
-  }, []);
-
-  // UPDATED: Constantly emit idle location ONLY if isOnline is true AND approved!
-  useEffect(() => {
-    if (!socket || activeTrip || !currentLocation || !isOnline || authUser?.status === 'PENDING' || authUser?.status === 'REJECTED') return; 
-
-    // Immediately emit location when going online
-    socket.emit("update_location", {
+    if (!socket || !currentLocation || !isOnline || authUser?.status === 'PENDING' || authUser?.status === 'REJECTED') return; 
+    const payload = {
       latitude: currentLocation[0],
-      longitude: currentLocation[1]
-    });
+      longitude: currentLocation[1],
+      ...(activeTrip && { passengerId: activeTrip.passenger.id }) 
+    };
 
-    // Keep emitting every 5 seconds while waiting for rides
+    socket.emit("update_location", payload);
     const interval = setInterval(() => {
-      socket.emit("update_location", {
-        latitude: currentLocation[0],
-        longitude: currentLocation[1]
-      });
+      socket.emit("update_location", payload);
     }, 5000);
 
     return () => clearInterval(interval);
   }, [socket, activeTrip, currentLocation, isOnline, authUser]);
 
-  // Listen for new rides AND cancellations
   useEffect(() => {
     if (!socket) return;
 
     const handleNewRide = (rideData) => {
       setIncomingRide(rideData);
+      
+      // Play the ringtone and set it to loop!
+      if (ringAudio.current) {
+        ringAudio.current.loop = true;
+        ringAudio.current.play().catch(err => console.warn("Browser blocked autoplay:", err));
+      }
     };
 
     const handleCancellation = (data) => {
+      stopRing();
       alert(data.message || "The passenger cancelled the trip.");
       setIncomingRide(null);
       setActiveTrip(null);
@@ -123,12 +128,11 @@ export default function DriverDashboard() {
       setRoutePath([]); 
     };
 
-    // FIX: Listen for when another driver claims the ride, or the passenger cancels it before anyone accepts
     const handleTripClaimedByOther = (data) => {
-      // Check if the ID in state matches the ID that was just claimed/cancelled
       setIncomingRide((currentIncoming) => {
         if (currentIncoming && currentIncoming.tripId === data.tripId) {
-          return null; // Hide the popup!
+          stopRing();
+          return null; 
         }
         return currentIncoming;
       });
@@ -136,18 +140,16 @@ export default function DriverDashboard() {
 
     socket.on("new_ride_request", handleNewRide);
     socket.on("trip_cancelled", handleCancellation); 
-    
-    // You might emit "trip_claimed" from the backend, but we'll use trip_cancelled as a generic fallback too
     socket.on("trip_claimed", handleTripClaimedByOther);
 
     return () => {
       socket.off("new_ride_request", handleNewRide);
       socket.off("trip_cancelled", handleCancellation); 
       socket.off("trip_claimed", handleTripClaimedByOther);
+      stopRing();
     };
   }, [socket]);
 
-  // Fetch addresses safely
   useEffect(() => {
     if (!incomingRide) return;
 
@@ -188,19 +190,21 @@ export default function DriverDashboard() {
           const path = data.routes[0].geometry.coordinates.map(c => [c[1], c[0]]);
           setRoutePath(path);
           setRouteIndex(0);
+
+          // Calculate Live Distance and Time
+          const distanceInKm = (data.routes[0].distance / 1000).toFixed(1);
+          const timeInMin = Math.ceil(data.routes[0].duration / 60);
+          setLiveEta({ distance: distanceInKm, time: timeInMin });
         }
       } catch (error) {
         console.error("Routing error", error);
       }
     };
     getRoute();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeTrip, tripStatus]); 
-
- // REAL-TIME GPS TRACKER
+  }, [activeTrip, tripStatus, currentLocation]);
+  // REAL-TIME GPS TRACKER
   useEffect(() => {
     if (navigator.geolocation) {
-      // watchPosition continuously fires every time the phone physically moves
       const watchId = navigator.geolocation.watchPosition(
         (pos) => {
           setCurrentLocation([pos.coords.latitude, pos.coords.longitude]);
@@ -209,7 +213,6 @@ export default function DriverDashboard() {
           console.warn("GPS failed, using fallback.", err);
           setCurrentLocation((prev) => prev || [9.0310, 38.7410]); 
         },
-        // enableHighAccuracy forces the phone to use GPS satellites instead of cell towers
         { enableHighAccuracy: true, maximumAge: 5000, timeout: 10000 } 
       );
 
@@ -219,9 +222,9 @@ export default function DriverDashboard() {
     }
   }, []);
 
-  // Accept Ride Handler
   const handleAccept = async () => {
     if (!incomingRide) return;
+    stopRing();
     setIsAccepting(true);
     try {
       await axiosInstance.put(`/trips/${incomingRide.tripId}/respond`, { status: "ACCEPTED" });
@@ -229,17 +232,15 @@ export default function DriverDashboard() {
       setIncomingRide(null); 
     } catch (error) {
       alert("Failed to accept ride: " + (error.response?.data?.message || error.message));
-      
-      // FIX: Clear the screen so they can get new rides!
       setIncomingRide(null); 
     } finally {
       setIsAccepting(false);
     }
   };
 
-  // Decline Handler
   const handleDecline = async () => {
     if (!incomingRide) return;
+    stopRing();
     try {
       await axiosInstance.put(`/trips/${incomingRide.tripId}/respond`, { status: "CANCELLED" });
     } catch (error) {
@@ -249,7 +250,6 @@ export default function DriverDashboard() {
     }
   };
 
-  // Pick up the passenger
   const handlePickup = async () => {
     setIsUpdating(true);
     try {
@@ -263,7 +263,6 @@ export default function DriverDashboard() {
     }
   };
 
-  // Complete Trip
   const handleComplete = async () => {
     setIsUpdating(true);
     try {
@@ -292,7 +291,6 @@ export default function DriverDashboard() {
 
   const displayTrip = incomingRide || activeTrip;
 
-  // The Remote Waiting Room 
   if (authUser?.status === 'PENDING') {
     return (
       <div className="flex h-screen w-screen items-center justify-center bg-gray-100 p-4">
@@ -319,7 +317,6 @@ export default function DriverDashboard() {
     );
   }
 
-  // NEW: The Rejected Screen
   if (authUser?.status === 'REJECTED') {
     return (
       <div className="flex h-screen w-screen items-center justify-center bg-gray-100 p-4">
@@ -363,7 +360,6 @@ export default function DriverDashboard() {
   return (
     <div className="h-[100dvh] w-full relative z-0 overflow-hidden bg-gray-50">
       
-      {/* INTERACTIVE DRIVER STATUS BAR (Click to Toggle) */}
       <div className="absolute top-4 left-16 right-4 z-[1000]">
         <div 
           onClick={handleToggleStatus}
@@ -404,7 +400,6 @@ export default function DriverDashboard() {
         </MapContainer>
       </div>
 
-      {/* INCOMING RIDE OVERLAY */}
       {incomingRide && (
         <div className="absolute bottom-0 left-0 w-full p-4 pb-8 z-[1000]">
           <div className="max-w-md mx-auto bg-white rounded-2xl shadow-2xl overflow-hidden border-2 border-black p-6">
@@ -454,6 +449,7 @@ export default function DriverDashboard() {
           </div>
         </div>
       )}
+
       {activeTrip && (
         <div className="absolute bottom-0 left-0 w-full p-4 pb-8 z-[1000]">
           <div className="max-w-md mx-auto bg-black text-white rounded-2xl shadow-2xl overflow-hidden p-6 border-t-4 border-green-500">
@@ -468,18 +464,26 @@ export default function DriverDashboard() {
             <div className="flex justify-between items-center border-t border-gray-700 pt-4 mb-4">
               <span className="font-bold text-lg">{activeTrip.passenger?.name}</span>
               
-              {/* FIX: Show Call button while EN_ROUTE, show Dynamic Fare when IN_PROGRESS */}
-              {tripStatus === "EN_ROUTE" && activeTrip.passenger?.phoneNumber ? (
-                <a 
-                  href={`tel:${activeTrip.passenger.phoneNumber}`} 
-                  className="bg-green-900 text-green-400 w-10 h-10 rounded-full flex items-center justify-center border border-green-700 hover:bg-green-800 transition-colors shadow-sm"
-                  title="Call Passenger"
-                >
-                  📞
-                </a>
-              ) : (
-                <span className="font-bold text-gray-400 text-sm">Dynamic Fare</span>
-              )}
+              <div className="flex items-center gap-3">
+                {liveEta && (
+                  <div className="text-right">
+                     <p className="text-green-400 font-bold text-lg">{liveEta.time} min</p>
+                     <p className="text-gray-400 text-xs">{liveEta.distance} km remaining</p>
+                  </div>
+                )}
+
+                {tripStatus === "EN_ROUTE" && activeTrip.passenger?.phoneNumber ? (
+                  <a 
+                    href={`tel:${activeTrip.passenger.phoneNumber}`} 
+                    className="bg-green-900 text-green-400 w-10 h-10 rounded-full flex items-center justify-center border border-green-700 hover:bg-green-800 transition-colors shadow-sm"
+                    title="Call Passenger"
+                  >
+                    📞
+                  </a>
+                ) : (
+                  <span className="font-bold text-gray-400 text-sm">Dynamic Fare</span>
+                )}
+              </div>
             </div>
 
             {tripStatus === "EN_ROUTE" ? (

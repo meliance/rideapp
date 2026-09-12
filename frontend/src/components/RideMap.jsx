@@ -31,7 +31,6 @@ export default function RideMap() {
 
   const [showMap, setShowMap] = useState(false);
 
-  // NEW: State for Recent Searches using LocalStorage
   const [recentSearches, setRecentSearches] = useState(() => {
     try {
       const saved = localStorage.getItem('rideApp_recentSearches');
@@ -49,6 +48,7 @@ export default function RideMap() {
   const [searchResults, setSearchResults] = useState([]);
   const [destination, setDestination] = useState(null);
   const [estimatedFee, setEstimatedFee] = useState(0);
+  const [liveEta, setLiveEta] = useState(null); 
   
   const [liveDriverLocation, setLiveDriverLocation] = useState(null);
   const [currentTripId, setCurrentTripId] = useState(null); 
@@ -131,6 +131,7 @@ export default function RideMap() {
     const handleStatusUpdate = (data) => {
       setTripStatus(data.status);
       setRoutePath([]); 
+      setLiveEta(null); // Instantly clears the old ETA when status updates
 
       if (data.status === "ACCEPTED") {
         setRequestStatus("Driver accepted! They are on the way.");
@@ -139,7 +140,8 @@ export default function RideMap() {
       else if (data.status === "IN_PROGRESS") {
         setRequestStatus("You are in the car. Enjoy the ride!");
         if (data.driver) setAssignedDriver(data.driver);
-      } 
+      }
+      // Restored the missing COMPLETED and CANCELLED logic!
       else if (data.status === "COMPLETED") {
         setTimeout(() => {
           const paidAmount = data.finalFare || estimatedFee; 
@@ -165,7 +167,7 @@ export default function RideMap() {
         setAssignedDriver(null);
       }
     };
-
+      
     socket.on("driver_location_update", handleDriverMove);
     socket.on("trip_status_updated", handleStatusUpdate);
 
@@ -183,10 +185,12 @@ export default function RideMap() {
         let start, end;
         if (!tripStatus && destination) {
           start = position; end = [destination.lat, destination.lng];
-        } else if (tripStatus === 'ACCEPTED' && liveDriverLocation) {
+        } else if (tripStatus === 'ACCEPTED') {
+          if (!liveDriverLocation) return; 
           start = liveDriverLocation; end = position; 
         } else if (tripStatus === 'IN_PROGRESS' && destination) {
-          start = position; end = [destination.lat, destination.lng]; 
+          start = liveDriverLocation || position; 
+          end = [destination.lat, destination.lng]; 
         } else {
           return;
         }
@@ -198,6 +202,10 @@ export default function RideMap() {
         if (data.routes && data.routes.length > 0) {
           const path = data.routes[0].geometry.coordinates.map(c => [c[1], c[0]]);
           setRoutePath(path);
+
+          const distanceInKm = (data.routes[0].distance / 1000).toFixed(1);
+          const timeInMin = Math.ceil(data.routes[0].duration / 60);
+          setLiveEta({ distance: distanceInKm, time: timeInMin });
 
           if (!tripStatus) {
              const roadDistanceInMeters = data.routes[0].distance;
@@ -245,11 +253,8 @@ export default function RideMap() {
     setSearchQuery(placeName);
     setSearchResults([]);
 
-    // NEW: Save to Recent Searches memory
     setRecentSearches((prev) => {
-      // Remove it if it already exists so we don't get duplicates
       const filtered = prev.filter(item => item.name !== placeName);
-      // Add it to the front, and keep only the latest 3
       const updated = [{ name: placeName, lat, lng }, ...filtered].slice(0, 3);
       localStorage.setItem('rideApp_recentSearches', JSON.stringify(updated));
       return updated;
@@ -268,7 +273,6 @@ export default function RideMap() {
     
     try {
       const payload = {
-        // FIX: Extract all driver IDs into an array instead of picking just one!
         driverIds: drivers.map(d => d.driver_id),
         pickupLat: position[0],
         pickupLng: position[1],
@@ -307,9 +311,6 @@ export default function RideMap() {
     setAssignedDriver(null);
   };
 
-  // ==========================================
-  // 1. WELCOME OVERLAY
-  // ==========================================
   if (!showMap) {
     return (
       <div className="min-h-screen bg-gray-50 flex flex-col pt-32 px-6 relative overflow-hidden">
@@ -353,7 +354,6 @@ export default function RideMap() {
           </form>
           <div className="mt-8 min-h-[60px]">
             {recentSearches.length > 0 ? (
-              // FIX: Changed from horizontal scroll to vertical flex-col
               <div className="flex flex-col gap-3 pb-4">
                 <span className="text-gray-400 font-bold text-sm tracking-wider uppercase mb-1">
                   Recent Searches
@@ -362,12 +362,10 @@ export default function RideMap() {
                   <button 
                     key={idx}
                     onClick={() => { 
-                      // Instantly load the map with the saved coordinates!
                       setSearchQuery(search.name);
                       setDestination({ name: search.name, lat: search.lat, lng: search.lng });
                       setShowMap(true); 
                     }}
-                    // FIX: Made the buttons w-full, added text-left, and removed the character limit
                     className="w-full bg-white px-4 py-4 rounded-xl shadow-sm border border-gray-100 font-bold text-gray-700 flex items-center gap-3 hover:bg-gray-50 hover:border-black transition-colors text-left"
                   >
                     <span className="text-xl text-gray-400">🕒</span> 
@@ -388,9 +386,6 @@ export default function RideMap() {
     );
   }
 
-  // ==========================================
-  // 2. GPS LOADING SCREEN
-  // ==========================================
   if (!position) {
     return (
       <div className="flex h-screen w-screen items-center justify-center bg-gray-50 flex-col">
@@ -401,19 +396,14 @@ export default function RideMap() {
     );
   }
 
-  // ==========================================
-  // 3. FULL MAP UI (Revealed after search)
-  // ==========================================
   const isErrorStatus = requestStatus === 'No drivers available nearby.' || requestStatus === 'Your request is not accepted.' || requestStatus === 'No drivers responded in time.';
 
   return (
     <div className="h-[100dvh] w-full relative z-0 overflow-hidden bg-gray-50">
       
-      {/* SEARCH BAR LAYER (Top) */}
       <div className="absolute top-4 left-16 right-4 z-[1000] pointer-events-none">
         <div className="max-w-md mx-auto relative flex gap-2 pointer-events-auto">
           
-          {/* Back Button to return to Welcome UI */}
           {!tripStatus && !destination && (
              <button 
                 onClick={() => { setShowMap(false); setSearchQuery(''); setSearchResults([]); }}
@@ -432,7 +422,6 @@ export default function RideMap() {
               className="min-w-0 w-full bg-white rounded-xl shadow-lg pl-4 pr-5 h-[56px] text-lg font-bold border border-transparent focus:border-black focus:outline-none transition-all"
             />
             
-            {/* Search Results Dropdown */}
             {searchResults.length > 0 && (
               <div className="absolute top-full mt-2 w-full bg-white rounded-xl shadow-xl overflow-hidden border border-gray-100">
                 {searchResults.map((place) => (
@@ -451,7 +440,6 @@ export default function RideMap() {
         </div>
       </div>
 
-      {/* MAP LAYER */}
       <div className="absolute inset-0 z-10">
         <MapContainer center={position} zoom={14} className="h-full w-full" zoomControl={false}>
           <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
@@ -480,7 +468,6 @@ export default function RideMap() {
         </MapContainer>
       </div>
 
-      {/* CHECKOUT LAYER (Bottom) */}
       {destination && (
         <div className="absolute bottom-0 left-0 w-full p-4 pb-8 z-[1000] pointer-events-none">
           <div className="max-w-md mx-auto bg-white rounded-2xl shadow-2xl overflow-hidden pointer-events-auto border border-gray-100 p-6">
@@ -499,31 +486,45 @@ export default function RideMap() {
                 )}
                 
                 {(tripStatus === 'ACCEPTED' || tripStatus === 'IN_PROGRESS') && assignedDriver ? (
-                  <div className="w-full bg-white rounded-xl p-4 mb-4 border border-gray-100 flex items-center justify-between text-left shadow-sm">
-                    <div className="flex items-center gap-3">
-                      {assignedDriver.profilePic ? (
-                        <img src={assignedDriver.profilePic} alt="Driver" className="w-12 h-12 rounded-full object-cover" />
-                      ) : (
-                        <div className="w-12 h-12 rounded-full bg-gray-200 flex items-center justify-center">
-                          <span className="text-gray-500 font-bold text-lg">D</span>
-                        </div>
-                      )}
-                      <div>
-                        <p className="font-bold text-gray-900">{assignedDriver.name || "Your Driver"}</p>
-                        <p className="text-xs text-gray-500 font-medium">
-                          {assignedDriver.carModel || "Standard Car"} • {assignedDriver.plateNumber || "N/A"}
-                        </p>
+                  <div className="w-full bg-white rounded-xl p-4 mb-4 border border-gray-100 flex flex-col text-left shadow-sm">
+                    {/* IMPLEMENTED: Fallback UI when liveEta is calculating */}
+                    {liveEta ? (
+                      <div className="bg-blue-50 text-blue-700 p-2 rounded-lg text-sm font-bold text-center mb-3 border border-blue-100">
+                        {tripStatus === 'ACCEPTED' 
+                          ? `Driver is ${liveEta.time} min away (${liveEta.distance} km)` 
+                          : `Arriving at destination in ${liveEta.time} min (${liveEta.distance} km)`}
                       </div>
-                    </div>
-                    {assignedDriver.phone && (
-                      <a 
-                        href={`tel:${assignedDriver.phone}`} 
-                        className="bg-green-100 text-green-700 w-10 h-10 rounded-full flex items-center justify-center hover:bg-green-200 transition-colors"
-                        title="Call Driver"
-                      >
-                        📞
-                      </a>
+                    ) : (
+                      <div className="bg-blue-50 text-blue-700 p-2 rounded-lg text-sm font-bold text-center mb-3 border border-blue-100 animate-pulse">
+                        Connecting to Driver GPS...
+                      </div>
                     )}
+                    <div className="flex items-center justify-between w-full">
+                      <div className="flex items-center gap-3">
+                        {assignedDriver.profilePic ? (
+                          <img src={assignedDriver.profilePic} alt="Driver" className="w-12 h-12 rounded-full object-cover" />
+                        ) : (
+                          <div className="w-12 h-12 rounded-full bg-gray-200 flex items-center justify-center">
+                            <span className="text-gray-500 font-bold text-lg">D</span>
+                          </div>
+                        )}
+                        <div>
+                          <p className="font-bold text-gray-900">{assignedDriver.name || "Your Driver"}</p>
+                          <p className="text-xs text-gray-500 font-medium">
+                            {assignedDriver.carModel || "Standard Car"} • {assignedDriver.plateNumber || "N/A"}
+                          </p>
+                        </div>
+                      </div>
+                      {assignedDriver.phone && (
+                        <a 
+                          href={`tel:${assignedDriver.phone}`} 
+                          className="bg-green-100 text-green-700 w-10 h-10 rounded-full flex flex-shrink-0 items-center justify-center hover:bg-green-200 transition-colors"
+                          title="Call Driver"
+                        >
+                          📞
+                        </a>
+                      )}
+                    </div>
                   </div>
                 ) : (
                   <>
