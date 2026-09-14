@@ -86,17 +86,22 @@ export default function DriverDashboard() {
   }, [incomingRide]);
 
   // 4. STATUS & WAKE LOCK
-  const handleToggleStatus = () => {
+ const handleToggleStatus = () => {
     const newStatus = !isOnline;
     setIsOnline(newStatus);
+    
     if (socket) {
       socket.emit("toggle_status", { isOnline: newStatus });
     }
+    
     if (ringAudio.current && newStatus) {
-      ringAudio.current.play().then(() => {
-        ringAudio.current.pause();
-        ringAudio.current.currentTime = 0;
-      }).catch(err => console.warn("Audio unlock skipped", err));
+      const playPromise = ringAudio.current.play();
+      if (playPromise !== undefined) {
+        playPromise.then(() => {
+          ringAudio.current.pause();
+          ringAudio.current.currentTime = 0;
+        }).catch(err => console.warn("Chrome blocked unlock:", err));
+      }
     }
   };
 
