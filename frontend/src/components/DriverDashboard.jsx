@@ -30,22 +30,42 @@ export default function DriverDashboard() {
   const { socket } = useSocketStore();
   
   const [incomingRide, setIncomingRide] = useState(null);
-  const [activeTrip, setActiveTrip] = useState(null);
   const [isAccepting, setIsAccepting] = useState(false);
-  
   const [currentLocation, setCurrentLocation] = useState(null); 
-  
   const [pickupAddress, setPickupAddress] = useState("Locating...");
   const [dropoffAddress, setDropoffAddress] = useState("Locating...");
-
-  const [tripStatus, setTripStatus] = useState("EN_ROUTE");
   const [isUpdating, setIsUpdating] = useState(false);
   const [liveEta, setLiveEta] = useState(null);
-
   const [routePath, setRoutePath] = useState([]);
   const [routeIndex, setRouteIndex] = useState(0);
 
-  // NEW: Audio player reference and helper function
+  // 1. LOCAL STORAGE STATES
+  const [activeTrip, setActiveTrip] = useState(() => {
+    const saved = localStorage.getItem('driver_activeTrip');
+    return saved ? JSON.parse(saved) : null;
+  });
+  const [tripStatus, setTripStatus] = useState(() => {
+    return localStorage.getItem('driver_tripStatus') || "EN_ROUTE";
+  });
+  const [isOnline, setIsOnline] = useState(() => {
+    return localStorage.getItem("driverIsOnline") === "true";
+  });
+
+  // 2. AUTO-SAVE HOOKS
+  useEffect(() => {
+    if (activeTrip) localStorage.setItem('driver_activeTrip', JSON.stringify(activeTrip));
+    else localStorage.removeItem('driver_activeTrip');
+  }, [activeTrip]);
+
+  useEffect(() => {
+    localStorage.setItem('driver_tripStatus', tripStatus);
+  }, [tripStatus]);
+
+  useEffect(() => {
+    localStorage.setItem("driverIsOnline", isOnline);
+  }, [isOnline]);
+
+  // 3. AUDIO SYSTEM
   const ringAudio = useRef(typeof Audio !== "undefined" ? new Audio('/ringtone.mp3') : null);
 
   const stopRing = () => {
@@ -60,27 +80,25 @@ export default function DriverDashboard() {
       const timer = setTimeout(() => {
         setIncomingRide(null);
         stopRing();
-      }, 60000); // Exactly 60 seconds
+      }, 60000);
       return () => clearTimeout(timer);
     }
   }, [incomingRide]);
 
-  // Online/Offline State
-  const [isOnline, setIsOnline] = useState(() => {
-    return localStorage.getItem("driverIsOnline") === "true";
-  });
-
+  // 4. STATUS & WAKE LOCK
   const handleToggleStatus = () => {
     const newStatus = !isOnline;
     setIsOnline(newStatus);
     if (socket) {
       socket.emit("toggle_status", { isOnline: newStatus });
     }
+    if (ringAudio.current && newStatus) {
+      ringAudio.current.play().then(() => {
+        ringAudio.current.pause();
+        ringAudio.current.currentTime = 0;
+      }).catch(err => console.warn("Audio unlock skipped", err));
+    }
   };
-
-  useEffect(() => {
-    localStorage.setItem("driverIsOnline", isOnline);
-  }, [isOnline]);
 
   useEffect(() => {
     if (socket && isOnline) {
@@ -88,6 +106,24 @@ export default function DriverDashboard() {
     }
   }, [socket, isOnline]);
 
+  useEffect(() => {
+    let wakeLock = null;
+    const requestWakeLock = async () => {
+      try {
+        if (isOnline && 'wakeLock' in navigator) {
+          wakeLock = await navigator.wakeLock.request('screen');
+        }
+      } catch (err) {
+        console.warn("Wake Lock blocked by device", err);
+      }
+    };
+    requestWakeLock();
+    return () => {
+      if (wakeLock) wakeLock.release();
+    };
+  }, [isOnline]);
+
+  // 5. GPS & SOCKET SYNC
   useEffect(() => {
     if (!socket || !currentLocation || !isOnline || authUser?.status === 'PENDING' || authUser?.status === 'REJECTED') return; 
     const payload = {
@@ -109,8 +145,6 @@ export default function DriverDashboard() {
 
     const handleNewRide = (rideData) => {
       setIncomingRide(rideData);
-      
-      // Play the ringtone and set it to loop!
       if (ringAudio.current) {
         ringAudio.current.loop = true;
         ringAudio.current.play().catch(err => console.warn("Browser blocked autoplay:", err));
@@ -150,6 +184,7 @@ export default function DriverDashboard() {
     };
   }, [socket]);
 
+  // 6. ADDRESS & ROUTING
   useEffect(() => {
     if (!incomingRide) return;
 
@@ -176,7 +211,6 @@ export default function DriverDashboard() {
     fetchAddresses();
   }, [incomingRide]);
 
-  // Fetch real road geometry from Open Source Routing Machine
   useEffect(() => {
     if (!activeTrip || !currentLocation) return;
     const getRoute = async () => {
@@ -191,7 +225,6 @@ export default function DriverDashboard() {
           setRoutePath(path);
           setRouteIndex(0);
 
-          // Calculate Live Distance and Time
           const distanceInKm = (data.routes[0].distance / 1000).toFixed(1);
           const timeInMin = Math.ceil(data.routes[0].duration / 60);
           setLiveEta({ distance: distanceInKm, time: timeInMin });
@@ -201,8 +234,10 @@ export default function DriverDashboard() {
       }
     };
     getRoute();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTrip, tripStatus, currentLocation]);
-  // REAL-TIME GPS TRACKER
+
+  // 7. REAL-TIME HARDWARE TRACKER
   useEffect(() => {
     if (navigator.geolocation) {
       const watchId = navigator.geolocation.watchPosition(
@@ -222,6 +257,7 @@ export default function DriverDashboard() {
     }
   }, []);
 
+  // 8. HANDLERS
   const handleAccept = async () => {
     if (!incomingRide) return;
     stopRing();
@@ -265,32 +301,45 @@ export default function DriverDashboard() {
 
   const handleComplete = async () => {
     setIsUpdating(true);
-    try {
-      const url = `https://router.project-osrm.org/route/v1/driving/${activeTrip.pickup.lng},${activeTrip.pickup.lat};${currentLocation[1]},${currentLocation[0]}?overview=false`;
-      const res = await fetch(url);
-      const data = await res.json();
-      const realDistanceInMeters = data.routes[0].distance;
-      
-      const actualFare = Math.round(100 + (realDistanceInMeters / 1000) * 25);
 
-      await axiosInstance.put(`/trips/${activeTrip.tripId}/respond`, { 
-        status: "COMPLETED",
-        finalFare: actualFare 
-      });
-      
-      alert(`Trip completed! Passenger paid: ${actualFare} ETB`);
-      setActiveTrip(null);
-      setTripStatus("EN_ROUTE");
-      setRoutePath([]);
-    } catch (error) {
-      alert("Failed to complete trip: " + (error.response?.data?.message || error.message));
-    } finally {
+    navigator.geolocation.getCurrentPosition(async (pos) => {
+      try {
+        const finalLat = pos.coords.latitude;
+        const finalLng = pos.coords.longitude;
+        
+        const url = `https://router.project-osrm.org/route/v1/driving/${activeTrip.pickup.lng},${activeTrip.pickup.lat};${finalLng},${finalLat}?overview=false`;
+        const res = await fetch(url);
+        const data = await res.json();
+        
+        const realDistanceInMeters = data.routes[0].distance;
+        const actualFare = Math.round(100 + (realDistanceInMeters / 1000) * 25);
+
+        await axiosInstance.put(`/trips/${activeTrip.tripId}/respond`, { 
+          status: "COMPLETED",
+          finalFare: actualFare 
+        });
+        
+        alert(`Trip completed! Passenger paid: ${actualFare} ETB`);
+        setActiveTrip(null);
+        setTripStatus("EN_ROUTE");
+        setRoutePath([]);
+      } catch (error) {
+        alert("Failed to complete trip: " + (error.message));
+      } finally {
+        setIsUpdating(false);
+      }
+    }, 
+    (err) => {
+      alert("Waiting for GPS signal to wake up... try again in 3 seconds.");
       setIsUpdating(false);
-    }
+    }, 
+    { enableHighAccuracy: true, maximumAge: 0 }
+    );
   };
 
   const displayTrip = incomingRide || activeTrip;
 
+  // 9. RENDER UI
   if (authUser?.status === 'PENDING') {
     return (
       <div className="flex h-screen w-screen items-center justify-center bg-gray-100 p-4">

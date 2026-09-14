@@ -6,7 +6,6 @@ import { axiosInstance } from '../lib/axios';
 import { useSocketStore } from '../store/useSocketStore';
 import { useAuthStore } from '../store/useAuthStore'; 
 
-// --- VITE DEFAULT ICON FIX ---
 import icon from 'leaflet/dist/images/marker-icon.png';
 import iconShadow from 'leaflet/dist/images/marker-shadow.png';
 
@@ -29,7 +28,26 @@ export default function RideMap() {
   const { socket } = useSocketStore();
   const { authUser } = useAuthStore(); 
 
-  const [showMap, setShowMap] = useState(false);
+  const [showMap, setShowMap] = useState(() => {
+    return !!localStorage.getItem('passenger_tripStatus');
+  });
+
+  const [destination, setDestination] = useState(() => {
+    const saved = localStorage.getItem('passenger_destination');
+    return saved ? JSON.parse(saved) : null;
+  });
+  
+  const [estimatedFee, setEstimatedFee] = useState(() => {
+    const saved = localStorage.getItem('passenger_fee');
+    return saved ? parseInt(saved, 10) : 0;
+  });
+
+  const [currentTripId, setCurrentTripId] = useState(() => localStorage.getItem('passenger_tripId') || null); 
+  const [tripStatus, setTripStatus] = useState(() => localStorage.getItem('passenger_tripStatus') || null); 
+  const [assignedDriver, setAssignedDriver] = useState(() => {
+    const saved = localStorage.getItem('passenger_driver');
+    return saved ? JSON.parse(saved) : null;
+  });
 
   const [recentSearches, setRecentSearches] = useState(() => {
     try {
@@ -43,18 +61,10 @@ export default function RideMap() {
   const [drivers, setDrivers] = useState([]);
   const [isRequesting, setIsRequesting] = useState(false);
   const [requestStatus, setRequestStatus] = useState('');
-  
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState([]);
-  const [destination, setDestination] = useState(null);
-  const [estimatedFee, setEstimatedFee] = useState(0);
   const [liveEta, setLiveEta] = useState(null); 
-  
   const [liveDriverLocation, setLiveDriverLocation] = useState(null);
-  const [currentTripId, setCurrentTripId] = useState(null); 
-  const [tripStatus, setTripStatus] = useState(null); 
-  const [assignedDriver, setAssignedDriver] = useState(null);
-
   const [position, setPosition] = useState(null);
   const [routePath, setRoutePath] = useState([]);
 
@@ -64,6 +74,31 @@ export default function RideMap() {
   const hour = new Date().getHours();
   const greeting = hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening';
   const firstName = authUser?.name?.split(' ')[0] || 'there';
+
+  useEffect(() => {
+    if (currentTripId) localStorage.setItem('passenger_tripId', currentTripId);
+    else localStorage.removeItem('passenger_tripId');
+  }, [currentTripId]);
+
+  useEffect(() => {
+    if (tripStatus) localStorage.setItem('passenger_tripStatus', tripStatus);
+    else localStorage.removeItem('passenger_tripStatus');
+  }, [tripStatus]);
+
+  useEffect(() => {
+    if (assignedDriver) localStorage.setItem('passenger_driver', JSON.stringify(assignedDriver));
+    else localStorage.removeItem('passenger_driver');
+  }, [assignedDriver]);
+
+  useEffect(() => {
+    if (destination) localStorage.setItem('passenger_destination', JSON.stringify(destination));
+    else localStorage.removeItem('passenger_destination');
+  }, [destination]);
+
+  useEffect(() => {
+    if (estimatedFee) localStorage.setItem('passenger_fee', estimatedFee.toString());
+    else localStorage.removeItem('passenger_fee');
+  }, [estimatedFee]);
 
   // REAL-TIME GPS TRACKER
   useEffect(() => {
@@ -131,7 +166,7 @@ export default function RideMap() {
     const handleStatusUpdate = (data) => {
       setTripStatus(data.status);
       setRoutePath([]); 
-      setLiveEta(null); // Instantly clears the old ETA when status updates
+      setLiveEta(null); 
 
       if (data.status === "ACCEPTED") {
         setRequestStatus("Driver accepted! They are on the way.");
@@ -141,7 +176,6 @@ export default function RideMap() {
         setRequestStatus("You are in the car. Enjoy the ride!");
         if (data.driver) setAssignedDriver(data.driver);
       }
-      // Restored the missing COMPLETED and CANCELLED logic!
       else if (data.status === "COMPLETED") {
         setTimeout(() => {
           const paidAmount = data.finalFare || estimatedFee; 
@@ -487,7 +521,6 @@ export default function RideMap() {
                 
                 {(tripStatus === 'ACCEPTED' || tripStatus === 'IN_PROGRESS') && assignedDriver ? (
                   <div className="w-full bg-white rounded-xl p-4 mb-4 border border-gray-100 flex flex-col text-left shadow-sm">
-                    {/* IMPLEMENTED: Fallback UI when liveEta is calculating */}
                     {liveEta ? (
                       <div className="bg-blue-50 text-blue-700 p-2 rounded-lg text-sm font-bold text-center mb-3 border border-blue-100">
                         {tripStatus === 'ACCEPTED' 
