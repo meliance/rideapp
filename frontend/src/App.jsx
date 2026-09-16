@@ -12,6 +12,7 @@ import TripHistory from './components/TripHistory';
 import Signup from './components/Signup';
 import DriverSignup from './components/DriverSignup';
 import Login from './components/Login';
+import ForgotPassword from './components/ForgotPassword';
 import Sidebar from './components/Sidebar';
 import Profile from './components/Profile';
 
@@ -66,6 +67,10 @@ function App() {
         <Route 
           path="/login" 
           element={!authUser ? <Login /> : <Navigate to="/" />} 
+        />
+        <Route 
+          path="/forgot-password" 
+          element={!authUser ? <ForgotPassword /> : <Navigate to="/" />} 
         />
         <Route 
           path="/upgrade" 

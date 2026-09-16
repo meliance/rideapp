@@ -307,6 +307,31 @@ export const checkAuth = async (req, res) => {
   }
 };
 
+export const resetPassword = async (req, res) => {
+  const { phoneNumber, newPassword } = req.body; 
+
+  try {
+    const userResult = await pool.query('SELECT * FROM users WHERE phone_number = $1', [phoneNumber]);
+    
+    if (userResult.rows.length === 0) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    const salt = await bcrypt.genSalt(10);
+    const hashedPassword = await bcrypt.hash(newPassword, salt);
+
+    await pool.query(
+      'UPDATE users SET password_hash = $1 WHERE phone_number = $2',
+      [hashedPassword, phoneNumber]
+    );
+
+    res.status(200).json({ message: "Password updated successfully" });
+  } catch (error) {
+    console.error("Error in resetPassword:", error); // Added this so you can see exact errors in your terminal!
+    res.status(500).json({ message: "Server error" });
+  }
+};
+
 export const updateProfilePic = async (req, res) => {
   try {
     const { profilePic } = req.body;

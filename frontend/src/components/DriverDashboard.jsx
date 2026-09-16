@@ -86,7 +86,7 @@ export default function DriverDashboard() {
   }, [incomingRide]);
 
   // 4. STATUS & WAKE LOCK
- const handleToggleStatus = () => {
+  const handleToggleStatus = () => {
     const newStatus = !isOnline;
     setIsOnline(newStatus);
     
@@ -145,6 +145,7 @@ export default function DriverDashboard() {
     return () => clearInterval(interval);
   }, [socket, activeTrip, currentLocation, isOnline, authUser]);
 
+  // --- UPDATED SOCKET LISTENERS ---
   useEffect(() => {
     if (!socket) return;
 
@@ -157,19 +158,35 @@ export default function DriverDashboard() {
     };
 
     const handleCancellation = (data) => {
-      stopRing();
-      alert(data.message || "The passenger cancelled the trip.");
-      setIncomingRide(null);
-      setActiveTrip(null);
-      setTripStatus("EN_ROUTE");
-      setIsAccepting(false);
-      setIsUpdating(false);
-      setRoutePath([]); 
+      console.log("Socket received cancellation for trip:", data.tripId); // <-- Added for debugging!
+      
+      // 1. Check if the cancelled trip is the one currently ringing
+      setIncomingRide((currentIncoming) => {
+        // FIX: Converted both to Strings to prevent Integer vs String mismatch!
+        if (currentIncoming && String(currentIncoming.tripId) === String(data.tripId)) {
+          stopRing();
+          return null; 
+        }
+        return currentIncoming;
+      });
+
+      setActiveTrip((currentActive) => {
+        if (currentActive && String(currentActive.tripId) === String(data.tripId)) {
+          stopRing();
+          alert(data.message || "The passenger cancelled the trip.");
+          setTripStatus(null);
+          setIsAccepting(false);
+          setIsUpdating(false);
+          setRoutePath([]);
+          return null; 
+        }
+        return currentActive;
+      });
     };
 
     const handleTripClaimedByOther = (data) => {
       setIncomingRide((currentIncoming) => {
-        if (currentIncoming && currentIncoming.tripId === data.tripId) {
+        if (currentIncoming && String(currentIncoming.tripId) === String(data.tripId)) {
           stopRing();
           return null; 
         }

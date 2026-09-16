@@ -36,7 +36,7 @@ export const requestTrip = async (req, res) => {
 
     await client.query('COMMIT');
 
-    // FIX 3: Loop through all nearby drivers and broadcast the ride!
+    // Loop through all nearby drivers and broadcast the ride!
     driverIds.forEach(driverId => {
       io.to(`user_${driverId}`).emit("new_ride_request", {
         tripId: newTrip.id,
@@ -220,8 +220,19 @@ export const cancelTrip = async (req, res) => {
 
     await client.query('COMMIT');
 
+    // --- NEW LOGIC: Tell everyone to stop ringing if driver_id is null ---
     if (trip.driver_id) {
-      io.to(`user_${trip.driver_id}`).emit("trip_cancelled", { message: "The passenger cancelled the trip." });
+      // Tell the specific driver who claimed it
+      io.to(`user_${trip.driver_id}`).emit("trip_cancelled", { 
+        tripId: tripId, // Send tripId so frontend knows which one
+        message: "The passenger cancelled the trip." 
+      });
+    } else {
+      // Broadcast to ALL drivers to stop ringing because no one claimed it yet
+      io.emit("trip_cancelled", { 
+        tripId: tripId, 
+        message: "The passenger cancelled the trip." 
+      });
     }
 
     res.status(200).json({ success: true, message: "Trip cancelled successfully." });

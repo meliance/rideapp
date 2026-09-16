@@ -6,6 +6,7 @@ import {
   login,
   updateProfilePic,
   logout, 
+  resetPassword,
   checkAuth 
 } from "../controllers/auth.controller.js";
 import { protectRoute } from "../middlewares/auth.middleware.js";
@@ -16,8 +17,7 @@ router.post("/signup", signup);
 router.post("/driver/signup", driverSignup);
 router.post("/upgradeToDriver",protectRoute, upgradeToDriver);
 router.post("/login", login);
-
-// FIX: Changed from /update-profile-pic to /update-profile to match the frontend!
+router.post("/reset-password", resetPassword);
 router.put("/update-profile", protectRoute, updateProfilePic);
 
 router.post("/logout", logout);
